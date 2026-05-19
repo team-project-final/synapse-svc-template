@@ -1,7 +1,0 @@
-package com.synapse.platform.audit.repository;
-
-import com.synapse.platform.audit.entity.AuditLog;
-import org.springframework.data.jpa.repository.JpaRepository;
-
-public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
-}

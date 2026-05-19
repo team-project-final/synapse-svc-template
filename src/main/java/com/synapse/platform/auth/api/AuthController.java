@@ -1,0 +1,27 @@
+package com.synapse.platform.auth.api;
+
+import com.synapse.platform.auth.api.dto.request.LoginRequest;
+import com.synapse.platform.auth.api.dto.response.TokenResponse;
+import com.synapse.platform.auth.application.AuthService;
+import com.synapse.platform.global.response.ApiResponse;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1/auth")
+public class AuthController {
+
+    private final AuthService authService;
+
+    public AuthController(AuthService authService) {
+        this.authService = authService;
+    }
+
+    @PostMapping("/login")
+    public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest request) {
+        return ApiResponse.ok(authService.login(request));
+    }
+}

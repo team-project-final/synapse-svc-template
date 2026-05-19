@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.synapse"
-version = "0.3.0-SNAPSHOT"
+version = "0.4.0-SNAPSHOT"
 
 java {
     toolchain {
@@ -15,11 +15,6 @@ java {
 
 repositories {
     mavenCentral()
-    // GitHub Packages — synapse-shared 배포처
-    // maven {
-    //     url = uri("https://maven.pkg.github.com/team-project-final/synapse-shared")
-    //     credentials { ... }
-    // }
 }
 
 dependencies {
@@ -28,19 +23,18 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-validation")
 
-    // Security + JWT (W2)
+    // Security + JWT
     implementation("org.springframework.boot:spring-boot-starter-security")
     implementation("io.jsonwebtoken:jjwt-api:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 
-    // Redis (W2)
+    // Redis
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
-    // W3 NEW — Kafka + Avro
+    // Kafka
     implementation("org.springframework.kafka:spring-kafka")
-    // implementation("com.synapse:shared-events:1.0.0")  // synapse-shared 멀티모듈 publish 후 활성화
-    // 임시: 로컬 stub 이벤트 클래스(global/kafka/event/*) 사용
+    // implementation("com.synapse:shared-events:1.0.0")
 
     runtimeOnly("com.h2database:h2")
     runtimeOnly("org.postgresql:postgresql")
@@ -48,6 +42,10 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
+
+    // W4 NEW — ArchUnit (도메인 격리/계층 방향 강제)
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
+
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
