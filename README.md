@@ -1,87 +1,148 @@
-# synapse-knowledge-svc — W2 skeleton
+# synapse-knowledge-svc — W3 skeleton
 
-> **추가**: `global/` 횡단 관심사 + JWT + 환경별 프로파일. note/graph 컨트롤러는 `ApiResponse<T>` 적용.
+> **추가**: 도메인별 `kafka/{producer,consumer}/`. **chunking이 비로소 동작 가능 상태**가 됩니다.
 
 ---
 
-## 📂 W2에서 추가된 구조
+## 🎯 chunking의 진짜 모습 — Kafka가 입구
+
+W1/W2에서 chunking은 외부 invokable이 아니었습니다. W3에서 비로소:
+
+```
+[전체 파이프라인]
+
+Client ──POST /api/v1/notes──→ NoteController
+                                    ↓
+                              NoteService.create()
+                                    ↓
+                              NoteRepository.save()
+                                    ↓
+                  NoteEventPublisher.publishNoteCreated()
+                                    ↓
+                  ┌─────────────────────────────────┐
+                  │ Kafka                            │
+                  │ topic: synapse.knowledge.note.   │
+                  │        created.v1                │
+                  └────────────┬────────────────────┘
+                               ↓
+        ┌──────────────────────┴──────────────────────┐
+        ↓                                             ↓
+  chunking/NoteCreatedConsumer              graph/NoteCreatedConsumer
+        ↓ (groupId: chunking)                          ↓ (groupId: graph)
+  ChunkingService.process()                  Node 자동 생성
+        ↓
+  ChunkEventPublisher.publishChunkReady()
+        ↓
+  Kafka: synapse.knowledge.chunking.chunk-ready.v1
+        ↓
+  graph/ChunkReadyConsumer
+        ↓ (groupId: graph)
+  유사 노드 찾기 → edge 자동 생성
+```
+
+**핵심 관찰**:
+- `note.NoteService`는 chunking이나 graph를 **모른다**. 그저 NoteCreated만 발행.
+- chunking은 controller가 아니라 **Kafka가 입구**. controller-less 도메인의 본질.
+- graph는 **두 종류 이벤트 구독**: NoteCreated(직접) + ChunkReady(chunking 통과 후).
+
+---
+
+## 📂 W3에서 추가된 구조
 
 ```
 src/main/java/com/synapse/knowledge/
 ├── KnowledgeApplication.java
-├── note/ graph/ chunking/   ← W1 그대로 (note는 ApiResponse 적용 데모)
-└── global/                  ← NEW
-    ├── config/{SecurityConfig, RedisConfig}
-    ├── exception/{ErrorCode, BusinessException, GlobalExceptionHandler}
-    ├── response/ApiResponse<T>
-    ├── security/{JwtTokenProvider, JwtAuthFilter}
-    └── util/
+│
+├── note/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                       ← NEW
+│       └── producer/NoteEventPublisher                NoteCreated 발행
+│
+├── graph/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                       ← NEW
+│       └── consumer/
+│           ├── NoteCreatedConsumer                  note → graph 노드 자동 생성
+│           └── ChunkReadyConsumer                   chunking → graph 링크 갱신
+│
+├── chunking/                                        ← controller 여전히 없음
+│   ├── service/ repository/ entity/
+│   └── kafka/                                       ← NEW (드디어 입구 생김)
+│       ├── consumer/NoteCreatedConsumer              ChunkingService.process() 트리거
+│       └── producer/ChunkEventPublisher              ChunkReady 발행
+│
+└── global/
+    ├── config/{KafkaConfig (NEW), SecurityConfig, RedisConfig}
+    └── kafka/event/                                 ← NEW (임시)
+        ├── NoteCreated.java
+        └── ChunkReady.java
 ```
-
-`resources/`:
-```
-application.yml + application-{local,dev,prod}.yml
-```
-
-`ErrorCode` 코드 prefix:
-- `C___` 공통, `N___` note, `G___` graph, `CH___` chunking
 
 ---
 
-## ℹ️ knowledge-svc 특이점
+## 📛 토픽 일람
 
-### chunking과 SecurityConfig
+| 토픽 | Publisher | Consumer | 의미 |
+|---|---|---|---|
+| `synapse.knowledge.note.created.v1` | note | chunking, graph | 노트가 생성됨 |
+| `synapse.knowledge.chunking.chunk-ready.v1` | chunking | graph | 청크 처리 완료 |
 
-chunking은 HTTP 입구가 없으므로 `SecurityConfig.requestMatchers`에 등장하지 않습니다. W3에서 Kafka 컨슈머가 추가되면, **메시지 수준의 신뢰**(토픽 권한, producer 신원)로 보호합니다 — JWT와 별개의 메커니즘.
-
-### `permitAll` 차이
-
-platform-svc는 `/api/v1/auth/**`를 permitAll로 노출 (로그인 자체는 인증 없이 가능해야 하므로). knowledge-svc는 로그인이 없어 그런 예외가 없고, `/actuator/health`만 permitAll.
-
----
-
-## 🔄 W1 → W2 변화 요약
-
-platform-svc/W2와 동일 패턴 — 자세한 내용은 [platform/w2 README](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w2/README.md) 참고.
+향후 추가 예정:
+- `synapse.knowledge.note.updated.v1` (제목/본문 변경 시 chunking 재실행)
+- `synapse.knowledge.note.deleted.v1` (graph 노드 삭제 트리거)
 
 ---
 
-## 🚀 W3에서 추가되는 것들 — knowledge 특수
+## 🔁 W2 → W3 변화 요약
 
-### chunking이 진짜 모습을 드러냅니다
+| 항목 | W2 | W3 |
+|---|---|---|
+| chunking 동작 | 외부에서 invokable 아님 | Kafka 컨슈머가 트리거 |
+| 도메인 간 통신 | 컨벤션 (직접 호출 가능했음) | Kafka 이벤트 only |
+| 의존성 | + security/jjwt/redis | + spring-kafka, spring-kafka-test |
+| 설정 | 4 프로파일 | + `spring.kafka.*` |
 
-W1/W2의 chunking은 외부 호출 불가능 — 그저 service+repository+entity가 있을 뿐. **W3에서 비로소 동작 가능 상태**가 됩니다:
+자세한 통증 → 해법 분석은 [platform/w3 README](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md) 참고.
 
+---
+
+## 🚀 W4에서 추가되는 것들 — knowledge 특수
+
+W3까지의 service가 너무 많은 일을 한다는 통증은 다른 서비스와 동일. 추가로 knowledge는:
+
+### controller-less 도메인의 ArchUnit 룰 처리
+
+플랫폼 ArchUnit 룰 중 일부는 chunking에서 **자동 통과**되거나 **수정 필요**:
+
+- "controller는 RestController 어노테이션 필수" → chunking은 controller 자체가 없어 룰 무효 (자동 통과)
+- "각 도메인 슬라이스에 api 패키지 존재" → chunking에는 api 패키지가 비어있음 → **예외 룰 추가 필요**
+
+W4 ArchUnit에 다음과 같은 예외 처리 추가:
+
+```java
+@Test
+void controller_less_domains_may_skip_api_package() {
+    classes()
+        .that().resideInAPackage("..chunking..")    // chunking은 api 없어도 OK
+        .should()...;
+}
 ```
-[W3 흐름]
-note POST /api/v1/notes → NoteCreated 이벤트 발행
-                              ↓
-                  chunking 컨슈머가 받음
-                  → ChunkingService.process(noteId, body)
-                  → ChunkReady 이벤트 발행
-                              ↓
-                  graph 컨슈머가 ChunkReady를 받음
-                  → 그래프 노드 자동 생성/링크
-```
 
-**왜 W1/W2에서 안 되나?** 도메인 간 직접 호출 금지 컨벤션 때문. note가 chunking을 직접 호출하면 강결합. Kafka 이벤트 인프라가 갖춰진 W3 이후라야 안전.
+### W4에 추가되는 항목들
 
-### W3에 추가되는 항목들 (knowledge 관점)
-
-| 항목 | 왜 필요? |
+| 항목 | knowledge 특수 |
 |---|---|
-| `note/kafka/producer/NoteEventPublisher` | note 변경을 외부에 알림. graph·chunking이 자동 반응 |
-| `graph/kafka/consumer/{NoteCreatedConsumer, ChunkReadyConsumer}` | note·chunking 이벤트를 받아 그래프 갱신 |
-| `chunking/kafka/consumer/NoteCreatedConsumer` | controller 부재의 진짜 의미 — Kafka가 트리거 |
-| `chunking/kafka/producer/ChunkEventPublisher` | 청크 완료를 graph에게 알림 |
-| `global/config/KafkaConfig` | producer/consumer factory + @EnableKafka |
-| `global/kafka/event/{NoteCreated, ChunkReady}` | 이벤트 클래스 임시 보관 (shared-events 이전 예정) |
+| `note/api/, graph/api/` 재구성 | platform과 동일 패턴 |
+| `chunking/api/` 비어있음 | controller-less 도메인의 예외 |
+| `application/port/` | NotePort, NodePort, EdgePort, ChunkJobPort + 도메인별 EventPort |
+| `domain/policy/` | NoteValidationPolicy, ChunkingPolicy (청크 크기·중첩 룰) |
+| `infrastructure/persistence/`, `messaging/` | 4 도메인 (chunking 포함) 모두 |
+| ArchUnit | 7룰 + chunking controller-less 예외 |
 
-> 자세한 통증 → 해법 패턴은 platform/w2 README의 W3 추가 항목 섹션 참고.
+자세한 통증 → 해법 분석은 [platform/w3 README의 W4 항목 섹션](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md) 참고.
 
 ---
 
-## 🔭 다음 주차 미리보기
+## 🔭 다음 주차
 
-- `skeleton/knowledge/w3` — Kafka 통신, chunking이 pipeline으로 진짜 동작
-- `skeleton/knowledge/w4` — `api/application/domain/infrastructure` + ArchUnit (controller-less 예외 룰)
+- `skeleton/knowledge/w4` — 라이트 헥사고날 + ArchUnit (controller-less 예외 룰 포함)

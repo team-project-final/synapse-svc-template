@@ -1,24 +1,32 @@
 package com.synapse.knowledge.note.service;
 
+import com.synapse.knowledge.global.kafka.event.NoteCreated;
 import com.synapse.knowledge.note.dto.request.CreateNoteRequest;
 import com.synapse.knowledge.note.dto.response.NoteResponse;
 import com.synapse.knowledge.note.entity.Note;
+import com.synapse.knowledge.note.kafka.producer.NoteEventPublisher;
 import com.synapse.knowledge.note.repository.NoteRepository;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
 
 @Service
 public class NoteService {
 
     private final NoteRepository noteRepository;
+    private final NoteEventPublisher noteEventPublisher;
 
-    public NoteService(NoteRepository noteRepository) {
+    public NoteService(NoteRepository noteRepository, NoteEventPublisher noteEventPublisher) {
         this.noteRepository = noteRepository;
+        this.noteEventPublisher = noteEventPublisher;
     }
 
     public NoteResponse create(CreateNoteRequest request) {
         Note saved = noteRepository.save(new Note(request.title(), request.body(), request.ownerId()));
+        noteEventPublisher.publishNoteCreated(new NoteCreated(
+            saved.getId(), saved.getOwnerId(), saved.getTitle(), saved.getBody(), Instant.now()
+        ));
         return toResponse(saved);
     }
 
