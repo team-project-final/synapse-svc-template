@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 /**
  * chunking 도메인의 진짜 입구 — controller가 아닌 Kafka 컨슈머.
  */
-@Component
+@Component("chunkingNoteCreatedKafkaConsumer")
 class NoteCreatedKafkaConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NoteCreatedKafkaConsumer.class);
