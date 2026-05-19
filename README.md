@@ -1,78 +1,113 @@
-# synapse-svc-template
+# synapse-engagement-svc — W1 skeleton
 
-Synapse 백엔드 서비스 골격 템플릿. 4개 *-svc 레포의 패키지 구조가 **W1 → W4**로 점진 확장되는 모습을 브랜치로 분리해 보여줍니다.
+> **한 줄 정의**: "community(게시판/댓글) + gamification(포인트/뱃지) 2 도메인. W3에서 gamification이 **fan-in 컨슈머**로 진가 발휘."
 
-## 사용법
+---
 
-새 서비스를 시작할 때:
+## 🎯 이 단계의 목표
 
-1. 우측 상단 **"Use this template"** 클릭
-2. 출발 시점(주차)에 해당하는 브랜치 선택
-3. 패키지명 `com.synapse.platform` → `com.synapse.{your-service}`로 일괄 치환
+- [x] community/gamification 2 도메인 split
+- [x] gamification이 왜 다른 서비스들의 이벤트를 듣는 fan-in 패턴인지 감 잡기
 
-## 브랜치 인덱스
+---
 
-각 *-svc 레포의 패키지 구조 진화를 4단계로 분해. **누적 브랜치** — `wN`은 `w(N-1)`에서 분기.
+## 🧭 2개 도메인의 성격
 
-### 진화 원칙
-
-| 주차 | 추가되는 요소 | 한 줄 정의 |
+| 도메인 | 성격 | HTTP API |
 |---|---|---|
-| **W1** | 도메인 N-way split + `controller/service/repository/entity/dto` | 동작하는 최소 |
-| **W2** | `global/` (config·exception·response·security·util) | 운영 가능한 골격 |
-| **W3** | 도메인별 `kafka/` + `shared-events` 의존 | 도메인 간 이벤트 통신 |
-| **W4** | `api / application / domain / infrastructure` 라이트 헥사고날 + ArchUnit | 강제되는 모듈리스 |
+| **community** | CRUD — 게시글, 댓글 | `POST/GET /api/v1/community/posts`, `POST .../comments` |
+| **gamification** | **Read-only API + 광역 Event 소비** | `GET /api/v1/gamification/users/{id}/score`, `/badges`, `/leaderboard` |
 
-### platform-svc (auth · audit · billing · notification)
+### gamification의 진짜 모습
 
-| 브랜치 | 내용 |
-|---|---|
-| `skeleton/platform/w1` | 4 도메인 골격 |
-| `skeleton/platform/w2` | + `global/` |
-| `skeleton/platform/w3` | + Kafka producer/consumer |
-| `skeleton/platform/w4` | + 라이트 헥사고날 + ArchUnit |
+gamification은 표면적으로 "포인트·뱃지 조회 API"지만, 본질은:
 
-### knowledge-svc (note · graph · chunking)
+```
+[W3에서 추가될 흐름]
+                  ┌─ platform/UserRegistered    → "회원가입" 첫 가입 뱃지
+                  ├─ community/CommentCreated  → "댓글 N개" 뱃지
+                  ├─ learning/CardReviewed      → "복습 연속" 뱃지
+                  └─ knowledge/NoteCreated      → "노트 N개" 뱃지
+                          ↓
+                  gamification 컨슈머 (fan-in)
+                          ↓
+                  Point/Badge 저장
+                          ↓
+                  GET /api/v1/gamification/users/{id}/score  ← 조회만 HTTP
+```
 
-| 브랜치 | 내용 |
-|---|---|
-| `skeleton/knowledge/w1` | 3 도메인, chunking은 controller 無 |
-| `skeleton/knowledge/w2` | + `global/` |
-| `skeleton/knowledge/w3` | + chunking 파이프라인 (kafka in/out only) |
-| `skeleton/knowledge/w4` | + ArchUnit "controller-less 도메인" 예외 룰 |
+**fan-in 패턴**: 한 도메인이 여러 외부 서비스의 이벤트를 동시 구독해서 통합하는 패턴. **shared-events 의존이 가장 두꺼운 도메인**.
 
-### engagement-svc (community · gamification)
+### W1에서는 어떻게?
 
-| 브랜치 | 내용 |
-|---|---|
-| `skeleton/engagement/w1` | 2 도메인 골격 |
-| `skeleton/engagement/w2` | + `global/` |
-| `skeleton/engagement/w3` | + gamification fan-in (3 서비스 이벤트 구독) |
-| `skeleton/engagement/w4` | + `domain/policy/` 룰 격리 |
+```java
+// W1 — 수동 호출용 메서드만 존재
+gamificationService.awardPoint(userId, 100, "FIRST_POST");
+gamificationService.awardBadge(userId, "EARLY_ADOPTER");
+```
 
-### learning-svc (Java [card · srs] + Python [ai])
+다른 도메인이 직접 호출하면 컨벤션 위반. W1은 단위 테스트로만 검증 가능 (자기 자신).
 
-| 브랜치 | 내용 |
-|---|---|
-| `skeleton/learning/w1` | `learning-java/` + `learning-ai/` 폴더 분리 |
-| `skeleton/learning/w2` | 양쪽에 `global/` · `core/` |
-| `skeleton/learning/w3` | Java ↔ Python = Kafka only |
-| `skeleton/learning/w4` | Java=ArchUnit, Python=import-linter |
+---
 
-## 규칙 요약
+## 📂 패키지 구조 (W1)
 
-1. **도메인 간 직접 호출 금지** — 모두 Kafka 이벤트 (synapse-shared/shared-events) 경유
-2. **`global/`만 횡단 의존 허용** — 도메인 코드는 다른 도메인 패키지를 import하지 않음
-3. **계층 의존 방향** — `api → application → domain ← infrastructure` (W4 기준)
-4. **`domain/`은 외부 의존 0** — JPA·Spring·Kafka 어노테이션 금지
+```
+src/main/java/com/synapse/engagement/
+├── EngagementApplication.java
+│
+├── community/
+│   ├── controller/PostController          POST/GET /posts + POST /posts/{id}/comments
+│   ├── service/PostService                Post + Comment 양쪽 처리
+│   ├── repository/                         PostRepository + CommentRepository
+│   ├── entity/                             Post, Comment
+│   └── dto/{request,response}/
+│
+└── gamification/
+    ├── controller/GamificationController  조회 전용 (score, badges, leaderboard)
+    ├── service/GamificationService         조회 + awardPoint/awardBadge (W3에서 컨슈머가 호출)
+    ├── repository/                         PointRepository + BadgeRepository
+    ├── entity/                             Point, Badge
+    └── dto/response/                       UserScoreResponse, BadgeResponse
+```
 
-자세한 컨벤션은 [team-project-final/syn](https://github.com/team-project-final/syn)의 `BACKEND_STRUCTURE.md` 참고.
+---
 
-## 관련 레포
+## ▶️ 실행
 
-- [synapse-shared](https://github.com/team-project-final/synapse-shared) — Avro 스키마 + 공통 라이브러리
-- [synapse-platform-svc](https://github.com/team-project-final/synapse-platform-svc)
-- [synapse-knowledge-svc](https://github.com/team-project-final/synapse-knowledge-svc)
-- [synapse-engagement-svc](https://github.com/team-project-final/synapse-engagement-svc)
-- [synapse-learning-svc](https://github.com/team-project-final/synapse-learning-svc)
-- [synapse-gitops](https://github.com/team-project-final/synapse-gitops)
+```bash
+./gradlew bootRun
+```
+
+기본 포트 `8082` (platform=8080, knowledge=8081 충돌 방지).
+
+```bash
+# community
+curl -X POST http://localhost:8082/api/v1/community/posts \
+  -H "Content-Type: application/json" \
+  -d '{"authorId":1,"title":"Hello","body":"World"}'
+
+# 댓글
+curl -X POST http://localhost:8082/api/v1/community/posts/1/comments \
+  -H "Content-Type: application/json" \
+  -d '{"authorId":2,"body":"Nice"}'
+
+# gamification (W1에선 빈 응답 — 이벤트 수신 인프라가 W3에서 추가됨)
+curl http://localhost:8082/api/v1/gamification/users/1/score
+```
+
+---
+
+## 🔭 다음 주차
+
+- `skeleton/engagement/w2` — `global/` (config·exception·response·security·util)
+- `skeleton/engagement/w3` — **gamification fan-in** (3 외부 서비스 이벤트 구독)
+- `skeleton/engagement/w4` — 라이트 헥사고날 + ArchUnit (gamification policy 격리 강조)
+
+---
+
+## 🚀 W2에서 추가되는 것들
+
+platform/W1 README의 "W2에서 추가되는 것들" 섹션과 동일 — 도메인이 2개라 통증 강도는 약간 낮지만 패턴은 같습니다.
+
+engagement 특수: gamification은 **외부 사용자에게 점수 조작 API를 노출하지 않습니다.** 점수 증감은 항상 이벤트 기반. 컨트롤러는 조회 전용. W2에서 `SecurityConfig`로도 보장 (조회 엔드포인트만 노출).
