@@ -1,0 +1,4 @@
+package com.synapse.platform.auth.dto.response;
+
+public record TokenResponse(String accessToken, String refreshToken) {
+}
