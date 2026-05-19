@@ -54,7 +54,55 @@ synapse-learning-svc/
 
 ---
 
-## 🧭 왜 한 레포에 두 언어?
+## 🧭 큰 그림 1: 왜 도메인을 먼저 나누나요?
+
+### ❌ 안티패턴 — 계층(layer)만으로 나누면?
+
+```
+learning-java/src/main/java/com/synapse/learning/
+├── controller/   CardController, SrsController
+├── service/      CardService, SrsService
+├── repository/   CardRepository, ReviewRecordRepository
+└── entity/       Card, ReviewRecord
+```
+
+도메인 2개라 작아 보이지만:
+1. **도메인 간 결합 유혹** — `SrsService`가 `CardRepository`를 직접 호출하기 쉬움 (도메인 격리 위반).
+2. **확장 시 폴더 비대** — 카드 통계·복습 큐 등 추가 시 모든 폴더가 동시에 부풀어 도메인이 안 보임.
+3. **추출 어려움** — 향후 srs를 별도 서비스로 분리하려면 4개 폴더 추적 비용.
+
+### ✅ 도메인 우선 분리 (이 프로젝트 채택)
+
+```
+learning-java/src/main/java/com/synapse/learning/
+├── card/         ← 도메인
+│   ├── controller/ service/ repository/ entity/ dto/
+└── srs/          ← 도메인
+    ├── controller/ service/ repository/ entity/ dto/
+```
+
+Python도 같은 의도 — `app/api/v1/`, `app/services/`, `app/models/`도 단일 도메인(recommendation)이라 단순하지만, 도메인이 늘면 **언어에 무관하게** 도메인 폴더 분리가 정답.
+
+---
+
+## 🧱 5계층의 정석 (Java 도메인, Python도 같은 의도)
+
+| 계층 | Java | Python | 역할 |
+|---|---|---|---|
+| **controller** | `card/controller/CardController` | `app/api/v1/recommendation.py` | HTTP 받음 → service에 위임. 비즈니스 로직 금지 |
+| **service** | `card/service/CardService` | `app/services/recommendation_service.py` | 비즈니스 로직 조립. 트랜잭션 경계 |
+| **repository** | `card/repository/CardRepository` (JpaRepository) | `app/repositories/` (W3 이후) | DB 접근만. CRUD 자동 |
+| **entity** | `card/entity/Card` (`@Entity`) | (Pydantic + DB 모델 분리 검토) | DB 테이블 = 클래스 |
+| **dto** | `card/dto/{request,response}/...` | `app/models/recommendation.py` (Pydantic) | API 입출력 봉투. entity 직접 노출 금지 |
+
+각 계층은 **아래만 의존, 위는 모름** (단방향). 신입이 가장 자주 어기는 룰:
+- 컨트롤러에 비즈니스 로직 박기
+- entity를 그대로 응답으로 내보내기
+- service에서 다른 도메인 repository 직접 호출 (격리 위반)
+
+---
+
+## 🧭 큰 그림 2: 왜 한 레포에 두 언어?
 
 ### 대안과 비교
 
