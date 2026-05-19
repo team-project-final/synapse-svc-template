@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.synapse"
-version = "0.3.0-SNAPSHOT"
+version = "0.4.0-SNAPSHOT"
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(21) }
@@ -22,8 +22,6 @@ dependencies {
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
-
-    // W3 NEW
     implementation("org.springframework.kafka:spring-kafka")
 
     runtimeOnly("com.h2database:h2")
@@ -32,6 +30,10 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
+
+    // W4 NEW
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
+
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

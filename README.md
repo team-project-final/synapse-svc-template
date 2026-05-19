@@ -1,147 +1,173 @@
-# synapse-learning-svc — W3 skeleton
+# synapse-learning-svc — W4 skeleton (최종)
 
-> **추가**: **Java ↔ Python = Kafka only**. HTTP 직접 호출 폐기. 양쪽 모두 producer + consumer를 가짐.
-
----
-
-## 🎯 W3의 핵심: 비동기 양방향 통신
-
-```
-[Java: 복습 기록]
-SrsService.review(req)
-  ├──→ ReviewRecord 저장
-  ├──→ Kafka publish: synapse.learning.card.card-reviewed.v1
-  │        (다른 서비스 — engagement, knowledge 등이 구독)
-  └──→ Kafka publish: synapse.learning.srs.recommendation-request.v1
-                                ↓
-                  [Python: AI 추천]
-                  consumer.py listens
-                    → recommend_cards(...)
-                    → Kafka publish: synapse.learning.ai.recommendation-ready.v1
-                                ↓
-                  [Java: 결과 수신]
-                  RecommendationReadyConsumer.onRecommendationReady()
-                    → 캐시 저장 → 다음 카드 조회 시 활용
-```
-
-**핵심**: Java는 Python을 모름. Python은 Java를 모름. 둘 다 Kafka만 안다.
+> **추가**: 라이트 헥사고날 양쪽 모두. **Java=ArchUnit / Python=import-linter**로 의존 방향 자동 강제.
 
 ---
 
-## 📂 W3 추가 구조
+## 📂 W4 구조 — 양쪽 동일 형태, 다른 도구
 
 ```
 synapse-learning-svc/
 ├── learning-java/
 │   └── src/main/java/com/synapse/learning/
-│       ├── card/ srs/                           ← W1~W2 그대로
-│       ├── srs/
-│       │   ├── kafka/                            ← NEW
-│       │   │   ├── producer/SrsEventPublisher    CardReviewed + RecommendationRequest 발행
-│       │   │   └── consumer/RecommendationReadyConsumer   Python 응답 수신
-│       │   └── service/SrsService.java           Kafka publish 흐름 추가
-│       └── global/
-│           ├── config/KafkaConfig.java            NEW
-│           └── kafka/event/                       NEW (스텁)
-│               ├── CardReviewed.java
-│               ├── SrsRecommendationRequest.java
-│               └── SrsRecommendationReady.java
+│       ├── card/        api/{Controller, dto/}, application/{Service, port/}, domain/{Card, policy/}, infrastructure/{persistence/, messaging/}
+│       ├── srs/         api/, application/{Service, port/{ReviewRecordPort, EventPort}}, domain/{ReviewRecord, policy/SrsSchedulingPolicy}, infrastructure/{persistence/, messaging/}
+│       └── global/      config/, exception/, response/, security/, util/, kafka/event/
 │
 └── learning-ai/
+    ├── .importlinter                            ← Python의 ArchUnit 대응
     └── app/
-        ├── api/ services/ models/ core/          ← W2 그대로
-        ├── kafka/                                 ← NEW
-        │   ├── events.py                          Pydantic 모델 (Java record와 1:1)
-        │   ├── consumer.py                        aiokafka consumer (background task)
-        │   └── producer.py                        aiokafka producer
-        ├── ai/                                    ← NEW (W4에서 모듈 분리 시작)
-        │   └── recommendation_model.py
-        └── main.py                                lifespan으로 Kafka 컨슈머 부팅
+        ├── api/v1/                              ← FastAPI 라우터 (Controller 역할)
+        │   └── recommendation.py
+        ├── application/                          ← Use case 함수 + port
+        │   ├── recommendation_usecase.py         (Java의 @Service)
+        │   ├── port.py                            (Protocol = 인터페이스)
+        │   └── port_registry.py                   (Port → Adapter 바인딩, infra 의존 예외)
+        ├── domain/                               ← 비즈니스 모델 + 룰
+        │   ├── models.py                          Pydantic 모델 (도메인)
+        │   └── policies.py                        RecommendationPolicy (외부 의존 0)
+        ├── infrastructure/                       ← 외부 시스템 연결
+        │   ├── ml/recommendation_adapter.py       RecommendationPort 구현
+        │   └── messaging/                         Kafka consumer/producer (W3에서 이동)
+        │       ├── events.py
+        │       ├── consumer.py
+        │       └── producer.py
+        ├── core/                                 ← 횡단 (W2 그대로)
+        │   ├── config.py response.py exceptions.py dependencies.py
+        └── main.py
 ```
 
 ---
 
-## 📛 토픽 일람 (learning 관점)
+## 🛡 Java=ArchUnit / Python=import-linter
 
-| 토픽 | 방향 | 발행자 → 수신자 |
-|---|---|---|
-| `synapse.learning.card.card-reviewed.v1` | Java OUT | learning-java → engagement, knowledge 등 |
-| `synapse.learning.srs.recommendation-request.v1` | Java OUT | learning-java → learning-ai |
-| `synapse.learning.ai.recommendation-ready.v1` | Java IN | learning-ai → learning-java |
+### Java (`LearningArchitectureTest.java`) — 7개 ArchUnit 룰
 
-> 💡 **언어가 다르지만 토픽 컨벤션은 동일** (`synapse.{service}.{domain}.{event}.v{N}`). Avro 스키마로 통일하면 Java/Python 양쪽이 같은 .avsc에서 클래스 생성.
+platform/W4와 동일한 7룰:
+1. 도메인 슬라이스 격리 (card ↛ srs)
+2. domain → 다른 계층 의존 금지
+3. application → api/infrastructure 의존 금지 (port 예외)
+4. api → infrastructure 의존 금지
+5. domain.policy → 외부 의존성 0
+6. JpaRepository = infrastructure.persistence만
+7. @KafkaListener = infrastructure.messaging만
+
+### Python (`.importlinter`) — 4개 contract
+
+```ini
+[importlinter:contract:layers]
+name = Layered architecture
+type = layers
+layers =
+    app.api
+    app.application
+    app.domain
+containers = app
+
+[importlinter:contract:domain-pure]
+name = Domain has no outside dependencies
+type = forbidden
+source_modules = app.domain
+forbidden_modules = app.api, app.application, app.infrastructure, app.core
+
+[importlinter:contract:api-no-infra]
+name = API must not depend on infrastructure
+type = forbidden
+source_modules = app.api
+forbidden_modules = app.infrastructure
+
+[importlinter:contract:app-no-infra]
+name = Application must depend only on port interfaces
+type = forbidden
+source_modules = app.application.recommendation_usecase
+forbidden_modules = app.infrastructure
+```
+
+실행:
+```bash
+cd learning-ai
+pip install import-linter
+lint-imports
+```
+
+### 왜 Python에 더 절실한가?
+
+Java는 컴파일러가 강해서 "잘못된 import"가 어색하지만 실수로 들어가도 컴파일은 됨.
+**Python은 컴파일러가 약해서** `from app.infrastructure import ...`를 application에 적어도 런타임까지 못 잡음. → 컨벤션이 가장 쉽게 사문화되는 언어 = import-linter가 더 필요.
 
 ---
 
-## 🪞 Java ↔ Python 동일 컨셉 매핑 (W3 갱신)
+## 🪞 Java ↔ Python 컨셉 매핑 (W4 최종)
 
-| 컨셉 | Java (W3) | Python (W3) |
+| 컨셉 | Java | Python |
 |---|---|---|
-| 이벤트 클래스 | `record CardReviewed(...)` | `class CardReviewed(BaseModel)` |
-| Producer | `KafkaTemplate.send()` | `AIOKafkaProducer.send_and_wait()` |
-| Consumer | `@KafkaListener(topics=...)` | `AIOKafkaConsumer + async for` |
-| 직렬화 | `JsonSerializer` | `json.dumps` |
-| acks/retries | `application.yml` `spring.kafka.producer.*` | producer `acks="all"` |
-| Trust packages | `JsonDeserializer.TRUSTED_PACKAGES` | 모델 검증으로 자동 |
+| 인터페이스(Port) | `interface UserPort {...}` | `class UserPort(Protocol)` (PEP 544) |
+| 어댑터 | `@Component class UserPersistenceAdapter implements UserPort` | `class UserPersistenceAdapter(UserPort)` |
+| Port → Adapter 바인딩 | Spring DI 자동 (`@Component`) | `port_registry.py`에 명시 |
+| 도메인 정책 | `final class PasswordPolicy` (static methods) | `class RecommendationPolicy` (classmethods) |
+| 의존 방향 검증 | ArchUnit | import-linter |
+| 검증 시점 | `./gradlew test` | `lint-imports` (CI에서) |
+| package-private 가시성 | `interface ...` (no public) | `__all__` + 컨벤션 (실제 강제는 불가) |
 
-→ **응답 JSON이 동일하게 직렬화돼야** 양쪽이 서로의 이벤트를 읽을 수 있음. Java의 `record` field name (camelCase)을 Python의 Pydantic field name과 정확히 맞춰야 함 (`requestId`, `userId` 등).
+> 💡 **Python의 한계**: 진짜 package-private이 없음. `_` prefix 또는 `__all__`로 컨벤션. import-linter가 *대신* 호출 방향을 강제.
 
 ---
 
-## ▶️ 실행 (양쪽 + Kafka)
+## 🔁 W3 → W4 변화 요약
+
+| 항목 | W3 | W4 |
+|---|---|---|
+| Java 도메인 패키지 | controller/service/repository/entity/dto/kafka | api/application/{port}/domain/{policy}/infrastructure/{persistence,messaging} |
+| Python 폴더 | api / services / models / kafka / ai / core | api / application / domain / infrastructure / core |
+| 의존 강제 (Java) | 컨벤션 | ArchUnit 7룰 |
+| 의존 강제 (Python) | 컨벤션 | import-linter 4 contract |
+| Port/Adapter (양쪽) | 미정의 | 명시적 인터페이스 (Java interface / Python Protocol) |
+
+자세한 통증→해법: [platform/w3의 W4 항목 섹션](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md).
+
+---
+
+## ▶️ 실행 + 검증
 
 ```bash
-# 1. Kafka 띄우기 (별도 docker-compose 필요)
-docker compose up -d kafka
+# 1. 양쪽 빌드
+cd learning-java && ./gradlew build
+cd ../learning-ai && pip install -e ".[dev]"
 
-# 2. Java
-cd learning-java && ./gradlew bootRun &
+# 2. 의존 방향 검증
+cd learning-java && ./gradlew test --tests "*ArchitectureTest"
+cd ../learning-ai && lint-imports
 
-# 3. Python
-cd learning-ai && uvicorn app.main:app --port 8084 &
+# 3. 위반 시뮬레이션
+# Python: app/application/recommendation_usecase.py 에 다음 줄 추가
+#   from app.infrastructure.ml.recommendation_adapter import RecommendationMlAdapter
+# → lint-imports 실행 시 fail:
+#   "BROKEN" Application must depend only on port interfaces
 
-# 4. 복습 요청 → Java가 두 토픽 발행 → Python이 추천 → Java가 결과 수신
-curl -X POST http://localhost:8083/api/v1/srs/review \
-  -H "Content-Type: application/json" \
-  -d '{"cardId":1,"userId":42,"quality":4}'
-
-# 로그 확인:
-# Java: "Publishing CardReviewed: ..."
-# Java: "Publishing SrsRecommendationRequest: ..."
-# Python: "SrsRecommendationRequest: requestId=..."
-# Python: "Published SrsRecommendationReady: ..."
-# Java: "RecommendationReady from Python: requestId=..."
+# 4. 양쪽 동시 실행
+cd .. && docker compose up --build
 ```
 
 ---
 
-## 🔁 W2 → W3 변화 요약
+## 🎓 learning-svc가 W4에서 가장 잘 보여주는 것
 
-| 항목 | W2 | W3 |
-|---|---|---|
-| Java ↔ Python 통신 | 미정의 (HTTP 직접 호출 가능) | **Kafka 이벤트 only** |
-| Python 백그라운드 작업 | 없음 (HTTP 요청-응답만) | `lifespan`에서 컨슈머 시작 |
-| 의존성 | (양쪽 W2 그대로) | Java: + spring-kafka / Python: + aiokafka |
-| Java service | DB 호출 후 응답 | Event 발행 추가 |
+**같은 아키텍처를 다른 언어/도구로 구현하는 모범 사례.**
 
----
+- 인터페이스: Java `interface` ↔ Python `Protocol`
+- DI: Spring `@Component` ↔ Python 명시적 binding
+- 의존 강제: ArchUnit (테스트) ↔ import-linter (lint)
+- 도메인 룰: Java static method ↔ Python classmethod
 
-## 🚀 W4에서 추가되는 것들 — learning 특수
-
-W4의 평소 항목(`api/application/{port}/domain/{policy}/infrastructure/{persistence,messaging}` + ArchUnit)은 **Java 쪽**에 적용. **Python 쪽은 같은 패턴을 다른 도구로**:
-
-| Java | Python | 역할 |
-|---|---|---|
-| ArchUnit (compile-time → test) | **import-linter** (CI 시점 lint) | 의존 방향 강제 |
-| `api/application/domain/infrastructure/` | `api/ application/ domain/ infrastructure/` 같은 폴더명 | 동일 의도 |
-| Spring Data JPA package-private | repository 모듈 + `__all__` 명시 | 의도된 export 강제 |
-
-W4 README에서 자세히. 특히 **Python에서 import-linter를 쓰는 이유** — Python은 컴파일러가 약해서 "도메인 격리"가 컨벤션만으로 사문화되기 쉬움. 자동 검증이 더 절실.
-
-자세한 통증→해법은 [platform/w3 README의 W4 항목](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md).
+**팀이 두 언어를 동시에 다루는 도메인에서 가장 가치 있는 패턴**. Java만 알아도 Python 구조가 읽힘. 반대도 마찬가지.
 
 ---
 
-## 🔭 다음 (마지막)
+## 다음 단계 (template 외부)
 
-- `skeleton/learning/w4` — Java=ArchUnit + Python=import-linter, 양쪽 라이트 헥사고날
+W4가 마지막. 실제 synapse-learning-svc 레포로 이동 후:
+
+1. **synapse-shared 의존성 활성화** — Java/Python 양쪽이 같은 Avro 스키마에서 클래스 생성
+2. **임베딩 모델 통합** — `infrastructure/ml/`에 실제 모델 (PyTorch/sentence-transformers)
+3. **Vector DB 연동** — `infrastructure/persistence/`에 pgvector·Pinecone 등
+4. **양쪽 CI gate** — ArchUnit + import-linter가 PR 머지 차단

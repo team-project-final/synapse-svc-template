@@ -1,0 +1,43 @@
+[importlinter]
+root_package = app
+
+# ─── 1. 계층 의존 방향: api → application → domain ← infrastructure ───
+[importlinter:contract:layers]
+name = Layered architecture
+type = layers
+layers =
+    app.api
+    app.application
+    app.domain
+containers =
+    app
+
+# ─── 2. domain은 어떤 외부도 import 금지 ───
+[importlinter:contract:domain-pure]
+name = Domain has no outside dependencies
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    app.api
+    app.application
+    app.infrastructure
+    app.core
+
+# ─── 3. api는 infrastructure 직접 import 금지 ───
+[importlinter:contract:api-no-infra]
+name = API must not depend on infrastructure
+type = forbidden
+source_modules =
+    app.api
+forbidden_modules =
+    app.infrastructure
+
+# ─── 4. application은 infrastructure import 금지 (port_registry만 예외) ───
+[importlinter:contract:app-no-infra]
+name = Application must depend only on port interfaces, not concrete adapters
+type = forbidden
+source_modules =
+    app.application.recommendation_usecase
+forbidden_modules =
+    app.infrastructure
