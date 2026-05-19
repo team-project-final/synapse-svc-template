@@ -1,4 +1,10 @@
 package com.synapse.engagement.community.dto.request;
 
-public record CreateCommentRequest(Long authorId, String body) {
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+public record CreateCommentRequest(
+    @NotNull Long authorId,
+    @NotBlank String body
+) {
 }
