@@ -370,6 +370,259 @@ W2에서 `application-prod.yml`을 분리하지만, **시크릿은 절대 yml에
 
 ---
 
+## 🚀 W2에서 추가되는 것들 — 각 항목이 **왜** 필요한가
+
+"표면적으로 무엇이 추가되나"를 넘어, **W1 상태에서 어떤 통증이 그 추가를 요구하는가**를 봐야 합니다. 같은 패턴이 W2→W3, W3→W4에서도 반복됩니다: **현재의 통증이 다음 단계를 부른다.**
+
+### 1️⃣ `ApiResponse<T>` — 통일 응답 포맷
+
+**W1에서 무엇이 아픈가?**
+
+W1의 컨트롤러들은 응답이 제각각입니다:
+
+```java
+// auth — DTO 직접 반환
+@PostMapping("/login")
+public TokenResponse login(...) { ... }
+
+// audit — List 직접 반환
+@GetMapping
+public List<AuditLogResponse> list() { ... }
+```
+
+응답 JSON도 도메인마다 다른 모양:
+```json
+// auth/login 성공 응답
+{"accessToken":"...","refreshToken":"..."}
+
+// audit/logs 성공 응답
+[{"id":1,...}, {"id":2,...}]
+
+// 그리고 에러가 나면? Spring 기본 포맷
+{"timestamp":"...","status":500,"error":"...","path":"..."}
+```
+
+**프론트엔드는 매번 분기**해야 합니다: "이번 응답은 객체? 배열? 에러 포맷은 또 다르네?" 도메인이 10개로 늘면 클라이언트 코드가 if/else 지옥.
+
+**W2의 해법**: 모든 응답을 같은 봉투로 감쌈.
+
+```json
+{"success":true,  "data":{"accessToken":"...","refreshToken":"..."}, "timestamp":"..."}
+{"success":true,  "data":[{"id":1,...}], "timestamp":"..."}
+{"success":false, "error":{"code":"A001","message":"..."}, "timestamp":"..."}
+```
+
+프론트는 `response.success`로 분기만 하면 끝. 도메인이 100개여도 동일.
+
+> 💡 추가 효과: API 문서가 "응답에 항상 `success`, `data`, `error`, `timestamp`가 있다"는 한 줄로 끝남.
+
+---
+
+### 2️⃣ `global/exception/` — 통일 예외 처리
+
+**W1에서 무엇이 아픈가?**
+
+위 응답 통일을 W1 코드에 직접 넣으려면 모든 컨트롤러에 try-catch가 필요합니다:
+
+```java
+// auth/controller/AuthController.java (W1에 통일 응답을 억지로 넣으면)
+@PostMapping("/login")
+public ResponseEntity<?> login(@RequestBody LoginRequest req) {
+    try {
+        TokenResponse data = authService.login(req);
+        return ResponseEntity.ok(Map.of("success", true, "data", data));
+    } catch (InvalidCredentialsException e) {
+        return ResponseEntity.status(401)
+            .body(Map.of("success", false, "error", Map.of("code","A001","message",e.getMessage())));
+    } catch (Exception e) {
+        return ResponseEntity.status(500)
+            .body(Map.of("success", false, "error", Map.of("code","C999","message","서버 오류")));
+    }
+}
+```
+
+4개 컨트롤러 × 평균 3개 엔드포인트 = **12번 같은 try-catch 복붙**. 한 군데만 실수해도 일관성 깨짐. 에러 코드 정의도 사방에 흩어짐.
+
+**W2의 해법**: 컨트롤러는 그냥 던지고, `@RestControllerAdvice`가 가로채서 일관 처리.
+
+```java
+// 컨트롤러 — 깔끔
+@PostMapping("/login")
+public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest req) {
+    return ApiResponse.ok(authService.login(req));
+}
+
+// 서비스 — 그냥 던지면 됨
+throw new BusinessException(ErrorCode.INVALID_CREDENTIALS);
+
+// global/exception/GlobalExceptionHandler — 한 곳에서 처리
+@ExceptionHandler(BusinessException.class)
+public ResponseEntity<ApiResponse<Void>> handle(BusinessException e) { ... }
+```
+
+`ErrorCode` enum이 모든 에러를 카탈로그화 → 코드 prefix(`A___`/`B___`/`N___`)로 도메인 구분.
+
+> 💡 예외 응답을 한 줄 바꾸려면? `GlobalExceptionHandler` 1곳 수정. W1 방식이면 12곳 수정.
+
+---
+
+### 3️⃣ `global/security/` + `SecurityConfig` — JWT 인증
+
+**W1에서 무엇이 아픈가?**
+
+지금 `GET /api/v1/audit/logs`는 **누구나 호출 가능**합니다. 운영 절대 불가.
+
+W1에서 인증을 넣으려면 모든 컨트롤러 메서드 시작 부분에:
+```java
+@GetMapping
+public List<AuditLogResponse> list(@RequestHeader("Authorization") String header) {
+    if (!validateToken(header)) throw new UnauthorizedException();
+    return auditService.findAll();
+}
+```
+
+또 12번 복붙. 토큰 검증 로직 바꾸려면 12곳 수정.
+
+**W2의 해법**: Spring Security Filter Chain이 모든 요청을 가로채 토큰 검증.
+
+```
+요청 → JwtAuthFilter → SecurityContext에 인증 정보 저장 → 컨트롤러 (인증된 상태)
+                  ↓ (토큰 없거나 무효)
+                401 자동 응답 (컨트롤러 도달 안 함)
+```
+
+컨트롤러 코드는 W1과 동일 — 인증을 신경 쓰지 않음.
+
+**왜 JWT인가?** (다른 선택과 비교)
+| 방식 | 장점 | 단점 |
+|---|---|---|
+| 세션 (서버 메모리) | 즉시 무효화 | 서버 스케일아웃 시 세션 공유 필요 |
+| 세션 (Redis) | 스케일 OK | DB 라운드트립 |
+| **JWT** | stateless, 서버 부담 0 | 무효화 어려움(리프레시 토큰으로 보완) |
+
+마이크로서비스 환경 = 보통 JWT 선택. 무효화는 W2의 Redis에 블랙리스트로 보완.
+
+---
+
+### 4️⃣ `global/config/RedisConfig` — Redis 연결
+
+**W1에서 무엇이 아픈가?**
+
+W1은 Redis가 없습니다. W2 JWT 시스템을 운영 수준으로 만들려면:
+- **리프레시 토큰 저장** — 메모리에 두면 서버 재시작 시 모든 사용자 강제 로그아웃
+- **토큰 블랙리스트** — 로그아웃한 토큰을 만료 전까지 거부할 저장소 필요
+- **레이트 리미팅** — "분당 로그인 5회 초과 차단" 같은 카운터
+
+이 모든 게 Redis(빠른 KV 스토어)가 필요한 이유.
+
+**W2의 해법**: `StringRedisTemplate` Bean 등록. 사용 자체는 W2~W3에서 본격화.
+
+---
+
+### 5️⃣ 프로파일 분리 (`application-{local,dev,prod}.yml`)
+
+**W1에서 무엇이 아픈가?**
+
+W1의 `application.yml`은 H2 인메모리 DB로 고정:
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:platform
+    driver-class-name: org.h2.Driver
+```
+
+이 상태로 dev 서버에 배포하려면? 매번 yml 수정 → 빌드 → 푸시. **개발자 PC에선 H2, 서버에선 Postgres**라는 차이를 빌드 산출물 안에 표현할 방법이 없음.
+
+W1의 더 큰 문제: **비밀번호가 yml에 들어가는 순간 GitHub로 새어 나감**. 시크릿 스캐너가 PR을 차단.
+
+**W2의 해법**: 환경별 yml 분리 + 시크릿은 환경변수.
+
+```yaml
+# application-prod.yml
+spring:
+  datasource:
+    url: ${DB_URL}              # 환경변수에서 주입
+    password: ${DB_PASSWORD}    # GitHub에 절대 안 올라감
+```
+
+```bash
+# 실행 환경 선택
+SPRING_PROFILES_ACTIVE=prod java -jar app.jar
+```
+
+**`ddl-auto`도 환경별로 달라야 함**: local=`create-drop`, dev=`validate`, prod=`none` (운영에선 마이그레이션 도구로). 단일 yml로는 표현 불가.
+
+---
+
+### 6️⃣ Bean Validation (`@Valid`, `@NotBlank`, `@Email`)
+
+**W1에서 무엇이 아픈가?**
+
+W1의 `LoginRequest`는 검증이 없음:
+```java
+public record LoginRequest(String email, String password) {}
+```
+
+사용자가 `{"email":"","password":null}` 보내면? AuthService 안에 들어가서 NullPointerException. **검증을 서비스에서** 하면:
+```java
+public TokenResponse login(LoginRequest req) {
+    if (req.email() == null || req.email().isBlank()) throw new ...;
+    if (!isEmail(req.email())) throw new ...;
+    if (req.password() == null || req.password().length() < 8) throw new ...;
+    // 본 로직은 5줄 아래에...
+}
+```
+
+도메인 로직의 절반이 검증으로 도배됨. 12개 엔드포인트 × 평균 5개 필드 = 60줄의 검증 boilerplate.
+
+**W2의 해법**: 어노테이션으로 선언적 검증.
+
+```java
+public record LoginRequest(
+    @NotBlank @Email String email,
+    @NotBlank String password
+) {}
+
+// 컨트롤러에 @Valid만 붙이면 자동 검증, 위반 시 MethodArgumentNotValidException
+public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest req) { ... }
+```
+
+위반은 `GlobalExceptionHandler`가 자동 처리 (위 ②번). 서비스 코드는 본 로직만.
+
+---
+
+### 7️⃣ 의존성 추가 — `spring-security`, `jjwt`, `spring-data-redis`
+
+위 6개 항목의 구현에 필요한 라이브러리들. **단순 의존성 추가가 아니라 W2의 모든 기능이 이걸 깔고 동작합니다.**
+
+| 의존성 | 어디서 쓰나 |
+|---|---|
+| `spring-boot-starter-security` | SecurityConfig, JwtAuthFilter (filter chain) |
+| `jjwt-api/impl/jackson 0.12.x` | JwtTokenProvider (토큰 발급/파싱) |
+| `spring-boot-starter-data-redis` | StringRedisTemplate (리프레시 토큰, 블랙리스트) |
+| `spring-security-test` | 보호 엔드포인트 단위 테스트 (`@WithMockUser`) |
+
+---
+
+### 🔁 패턴: "통증 → 추가" 사이클
+
+W1 → W2의 7가지 항목을 보면 모두 같은 패턴:
+
+```
+W1에서 N번 복붙 → 일관성 깨짐 + 변경 비용 N배   ←  통증
+                ↓
+W2에서 한 곳에 모음 → 모든 도메인이 자동 혜택   ←  해법
+```
+
+이 패턴이 W2→W3, W3→W4에서도 반복됩니다.
+
+- **W3**: "도메인 간 직접 호출이 강결합·장애전파를 부름" → Kafka 이벤트로 디커플링
+- **W4**: "service가 JPA·Kafka·룰을 모두 짊어져 무거움" → 라이트 헥사고날로 책임 분리
+
+각 단계는 **앞 단계의 통증을 실제로 느꼈을 때** 도입해야 합니다. 미리 다 박으면 추상화의 무게에 짓눌립니다.
+
+---
+
 ## 📚 용어 사전 (신입용)
 
 | 용어 | 의미 |
