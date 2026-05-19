@@ -17,7 +17,7 @@ import java.time.Instant;
  * note가 생성되면 자동으로 청크 분할이 시작됨.
  * 이게 W1/W2에서 chunking이 외부에서 invokable이 아니었던 이유.
  */
-@Component
+@Component("chunkingNoteCreatedConsumer")
 public class NoteCreatedConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NoteCreatedConsumer.class);
