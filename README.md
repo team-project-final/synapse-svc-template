@@ -12,6 +12,57 @@
 
 ---
 
+## 🧭 큰 그림: 왜 도메인을 먼저 나누나요?
+
+### ❌ 안티패턴 — 계층(layer)만으로 나누면?
+
+```
+src/main/java/com/synapse/knowledge/
+├── controller/           NoteController, GraphController, ChunkingController (if existed)
+├── service/              NoteService, GraphService, ChunkingService
+├── repository/           NoteRepository, NodeRepository, EdgeRepository, ChunkJobRepository, ...
+└── entity/               Note, Node, Edge, ChunkJob, Chunk
+```
+
+작은 프로젝트엔 괜찮지만, 도메인 3개에 entity 6개로 늘면:
+1. **`repository/` 폴더 비대화** — 6개가 한 폴더에 섞임. note·graph·chunking 어느 도메인 것인지 한눈에 안 옴.
+2. **도메인 간 우발적 의존 유혹** — `GraphService`가 `NoteRepository`를 그냥 가져다 쓰는 게 자연스러워 보임 (실은 도메인 격리 위반).
+3. **chunking 분리 어려움** — 나중에 chunking을 별도 서비스로 추출하려면 폴더가 사방에 흩어져 있어 추적 비용 큼.
+
+### ✅ 도메인 우선 분리 (이 프로젝트 채택)
+
+```
+src/main/java/com/synapse/knowledge/
+├── note/        ← 도메인 (note 관련 모든 것이 여기)
+│   ├── controller/ service/ repository/ entity/ dto/
+├── graph/       ← 도메인
+│   ├── controller/ service/ repository/ entity/ dto/
+└── chunking/    ← 도메인 (controller 없는 pipeline)
+    ├── service/ repository/ entity/
+```
+
+- **응집도(Cohesion) 높음** — note 작업 시 `note/` 폴더 하나만 보면 됨.
+- **격리 시각화** — `GraphService`가 `import com.synapse.knowledge.note.service.NoteService;` 하면 누가 봐도 어색.
+- **추출 용이** — `chunking/`을 통째로 별도 서비스로 옮기기 쉬움.
+
+---
+
+## 🧱 5계층의 정석 (note·graph 도메인)
+
+| 계층 | 역할 | 예시 |
+|---|---|---|
+| **controller/** | HTTP 요청 받음 → service에 위임. 비즈니스 로직 금지. | `NoteController.create()` → `noteService.create(request)` |
+| **service/** | "무엇을 할지" 조립. 트랜잭션 경계. | `NoteService.create()`가 entity 생성 → repository 저장 |
+| **repository/** | DB 접근만. JpaRepository 상속하면 CRUD 자동. | `NoteRepository extends JpaRepository<Note, Long>` |
+| **entity/** | DB 테이블 = Java 클래스. `@Entity` 어노테이션. | `Note { id, title, body, ownerId }` |
+| **dto/** | API 입출력 봉투. **entity 직접 노출 금지** (DB 변경이 즉시 API 변경 되는 결합 방지). | `CreateNoteRequest`, `NoteResponse` |
+
+각 계층은 **아래 계층만** 알면 되고 **위 계층은 모름** (단방향 의존). 신입이 가장 자주 어기는 룰: 컨트롤러에 비즈니스 로직 박기, 엔티티를 응답 그대로 내보내기.
+
+> chunking은 controller가 없어 4계층 (service/repository/entity/dto)만 사용. W3에서 Kafka가 controller 역할을 대신합니다.
+
+---
+
 ## 🧭 3개 도메인의 성격이 다릅니다
 
 | 도메인 | 성격 | HTTP API | 비고 |
