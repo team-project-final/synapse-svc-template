@@ -11,6 +11,53 @@
 
 ---
 
+## 🧭 큰 그림: 왜 도메인을 먼저 나누나요?
+
+### ❌ 안티패턴 — 계층(layer)만으로 나누면?
+
+```
+src/main/java/com/synapse/engagement/
+├── controller/   PostController, GamificationController
+├── service/      PostService, GamificationService
+├── repository/   PostRepository, CommentRepository, PointRepository, BadgeRepository
+└── entity/       Post, Comment, Point, Badge
+```
+
+도메인 2개, entity 4개로 시작하지만:
+1. **`repository/` 폴더에 4개 섞임** — 어느 도메인 것인지 한눈에 안 옴.
+2. **도메인 격리 위반 유혹** — `GamificationService`가 `PostRepository`를 직접 호출하기 쉬움 (실은 절대 안 됨 — 댓글 카운트는 Kafka 이벤트로 받아야).
+3. **gamification 분리 어려움** — 향후 별도 서비스로 추출 시 사방에 흩어진 폴더 추적 비용.
+
+### ✅ 도메인 우선 분리 (이 프로젝트 채택)
+
+```
+src/main/java/com/synapse/engagement/
+├── community/        ← 도메인 (Post, Comment 모두 여기)
+│   ├── controller/ service/ repository/ entity/ dto/
+└── gamification/     ← 도메인 (Point, Badge 모두 여기)
+    ├── controller/ service/ repository/ entity/ dto/
+```
+
+- **응집도 높음** — gamification 작업 시 `gamification/` 폴더 하나만.
+- **격리 시각화** — `GamificationService`가 `import com.synapse.engagement.community.*` 하면 누가 봐도 어색.
+- **fan-in 강조** — W3에서 gamification이 외부 4개 서비스 이벤트를 받는데, 직접 호출 유혹을 처음부터 차단.
+
+---
+
+## 🧱 5계층의 정석
+
+| 계층 | 역할 | 예시 (community) |
+|---|---|---|
+| **controller/** | HTTP 요청 받음 → service에 위임. 비즈니스 로직 금지. | `PostController.createPost()` → `postService.createPost(req)` |
+| **service/** | "무엇을 할지" 조립. 트랜잭션 경계. | `PostService.createComment()`가 Comment entity 생성 + repository 저장 |
+| **repository/** | DB 접근만. JpaRepository 자동 CRUD. | `PostRepository extends JpaRepository<Post, Long>` |
+| **entity/** | DB 테이블 매핑. `@Entity`. | `Post { id, authorId, title, body }`, `Comment { id, postId, authorId, body }` |
+| **dto/** | API 입출력 봉투. **entity 노출 금지**. | `CreatePostRequest`, `PostResponse` |
+
+각 계층은 **아래만** 의존, 위는 모름 (단방향). gamification은 점수 변경 API를 외부에 노출하지 않아 controller가 read-only — controller도 도메인 책임에 맞게 좁힐 수 있는 예시.
+
+---
+
 ## 🧭 2개 도메인의 성격
 
 | 도메인 | 성격 | HTTP API |
