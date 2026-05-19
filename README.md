@@ -1,53 +1,451 @@
 # synapse-platform-svc — W2 skeleton
 
-> **추가**: `global/` 횡단 관심사 (config·exception·response·security·util) + 프로파일 분리 (local/dev/prod) + Spring Security + JWT 기본 설정.
+> **한 줄 정의**: "W1 위에 횡단 관심사(`global/`) + JWT 인증 + 환경별 프로파일을 얹은 단계."
+> 4개 도메인은 그대로지만, 그 도메인들이 공통으로 쓰는 기반이 생겼습니다.
 
-## 패키지 구조 (W2)
+이 문서는 W1을 끝낸 신입/주니어가 **"왜 갑자기 `global/` 패키지가 필요한가"**를 이해하도록 설계되었습니다.
+
+---
+
+## 🎯 이 단계의 목표
+
+W2를 마치면 여러분은:
+- [x] 횡단 관심사(cross-cutting concern)가 무엇인지 안다
+- [x] `ApiResponse<T>`로 응답을 통일하는 이유를 안다
+- [x] `BusinessException`을 던지면 어떻게 자동 처리되는지 흐름을 안다
+- [x] JWT 토큰이 발급되고 검증되는 전체 흐름을 따라갈 수 있다
+- [x] `application-{local,dev,prod}.yml`로 환경을 분리할 줄 안다
+
+---
+
+## 🧭 큰 그림: 왜 횡단 관심사를 분리하나요?
+
+### ❌ 안 분리하면 — 4개 컨트롤러가 같은 일을 4번씩
+
+W1까지만 작성된 상태에서, **모든 도메인에 인증과 예외 처리를 넣어야 한다면** 이렇게 됩니다:
+
+```java
+// auth/controller/AuthController.java
+@PostMapping("/login")
+public ResponseEntity<?> login(@RequestBody LoginRequest req) {
+    try {
+        // JWT 검증, 권한 체크 (코드 20줄)
+        TokenResponse result = authService.login(req);
+        return ResponseEntity.ok(Map.of("success", true, "data", result));
+    } catch (InvalidCredentialsException e) {
+        return ResponseEntity.status(401).body(Map.of("success", false, "error", e.getMessage()));
+    } catch (Exception e) {
+        return ResponseEntity.status(500).body(...);
+    }
+}
+
+// billing/controller/BillingController.java
+@PostMapping("/charge")
+public ResponseEntity<?> charge(@RequestBody ChargeRequest req) {
+    try {
+        // 똑같은 JWT 검증, 권한 체크 (또 20줄!)
+        ...
+    } catch (...) { ... }
+}
+
+// audit, notification — 같은 패턴 두 번 더
+```
+
+**4개 도메인 × 동일한 try-catch = 80줄의 중복.** 응답 포맷 한 번 바꾸려면 4개 파일 수정. 한 군데만 실수해도 일관성 깨짐.
+
+### ✅ 횡단 관심사 분리
+
+W2는 이런 중복을 **한 곳(`global/`)에 모아놓고, 4개 도메인은 모르게** 만듭니다:
+
+```java
+// 4개 컨트롤러는 이렇게 깔끔해집니다
+@PostMapping("/login")
+public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest req) {
+    return ApiResponse.ok(authService.login(req));   // 끝.
+}
+```
+
+- 인증 → `JwtAuthFilter`가 요청 들어올 때 자동 검증
+- 예외 → `GlobalExceptionHandler`가 모든 컨트롤러 예외를 가로채서 일관된 응답으로 변환
+- 응답 포맷 → `ApiResponse<T>`가 표준 봉투
+
+이게 **횡단 관심사(Cross-Cutting Concern)**의 분리입니다. 도메인 코드는 비즈니스에만 집중하고, 공통 기반은 한 곳에 모이는 패턴.
+
+---
+
+## 📂 W2에서 추가된 구조
 
 ```
 src/main/java/com/synapse/platform/
 ├── PlatformApplication.java
-├── auth/ audit/ billing/ notification/      ← W1 그대로 (auth만 ApiResponse 적용 데모)
-└── global/                                  ← NEW
-    ├── config/
-    │   ├── SecurityConfig.java               JWT 필터 체인 + PasswordEncoder Bean
+├── auth/ audit/ billing/ notification/   ← W1 그대로 (auth만 ApiResponse 적용 데모)
+└── global/                                ← NEW (이 단계의 핵심)
+    ├── config/                            ← Bean 설정 모음
+    │   ├── SecurityConfig.java               JWT 필터 체인 + PasswordEncoder
     │   └── RedisConfig.java                  StringRedisTemplate Bean
-    ├── exception/
-    │   ├── ErrorCode.java                    enum: 도메인별 코드 (A001~, B001~, N001~)
-    │   ├── BusinessException.java
+    ├── exception/                         ← 통일 예외 처리
+    │   ├── ErrorCode.java                    enum: 코드/메시지/HTTP 상태
+    │   ├── BusinessException.java            던지기만 하면 자동 처리됨
     │   └── GlobalExceptionHandler.java       @RestControllerAdvice
-    ├── response/
+    ├── response/                          ← 통일 응답 포맷
     │   └── ApiResponse<T>                    {success, data, error, timestamp}
-    ├── security/
-    │   ├── JwtTokenProvider.java             jjwt 0.12.x API
-    │   └── JwtAuthFilter.java                OncePerRequestFilter
-    └── util/                                 도메인 독립 유틸 전용 (현재 비어있음)
+    ├── security/                          ← JWT 인증 인프라
+    │   ├── JwtTokenProvider.java             토큰 발급/파싱
+    │   └── JwtAuthFilter.java                요청마다 토큰 검증
+    └── util/                              ← 도메인 독립 유틸 (현재 비어있음)
 ```
 
-## W1 → W2 변화 요약
+그리고 `src/main/resources/`에:
+
+```
+resources/
+├── application.yml          ← 모든 프로파일 공통 (앱 이름, JWT, actuator)
+├── application-local.yml    ← H2, 로컬 Redis
+├── application-dev.yml      ← 개발용 Postgres/Redis
+└── application-prod.yml     ← 프로덕션 (시크릿은 환경변수)
+```
+
+---
+
+## 🧱 각 `global/` 하위 패키지 자세히
+
+### 1️⃣ `global/response/ApiResponse<T>` — 응답을 봉투로 감싸기
+
+**왜?** 클라이언트가 "성공인가, 실패인가, 데이터가 뭔가"를 일관된 구조로 받게 하려고.
+
+```java
+public record ApiResponse<T>(
+    boolean success,
+    T data,
+    ApiError error,
+    Instant timestamp
+) {
+    public static <T> ApiResponse<T> ok(T data) { ... }
+    public static <T> ApiResponse<T> fail(String code, String message) { ... }
+}
+```
+
+**Before (W1)**:
+```json
+{"accessToken":"abc","refreshToken":"def"}     // 200 OK
+{"timestamp":"...", "status":500, ...}          // 500 (Spring 기본)
+```
+
+**After (W2)**:
+```json
+{ "success": true,  "data": {"accessToken":"abc","refreshToken":"def"}, "timestamp": "..." }
+{ "success": false, "error": {"code":"A001","message":"이메일 또는 비밀번호..."}, "timestamp": "..." }
+```
+
+→ 프론트엔드는 항상 `response.success`로 분기하면 됨. 응답 포맷이 도메인별로 다를 일이 없음.
+
+### 2️⃣ `global/exception/` — 예외를 던지면 자동 변환
+
+`ErrorCode`는 enum으로 모든 에러 코드를 한 곳에 정의:
+
+```java
+public enum ErrorCode {
+    INVALID_CREDENTIALS(HttpStatus.UNAUTHORIZED, "A001", "이메일 또는 비밀번호가 올바르지 않습니다."),
+    INVOICE_NOT_FOUND(HttpStatus.NOT_FOUND, "B001", "청구서를 찾을 수 없습니다."),
+    // ...
+}
+```
+
+코드 prefix 약속: `A___` = auth, `B___` = billing, `N___` = notification, `C___` = 공통.
+
+서비스 코드에서는 그냥 던집니다:
+
+```java
+@Service
+public class AuthService {
+    public TokenResponse login(LoginRequest req) {
+        User user = userRepo.findByEmail(req.email())
+            .orElseThrow(() -> new BusinessException(ErrorCode.INVALID_CREDENTIALS));
+        // ...
+    }
+}
+```
+
+그러면 `GlobalExceptionHandler`가 가로채서:
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<ApiResponse<Void>> handle(BusinessException e) {
+        return ResponseEntity.status(e.getErrorCode().getStatus())
+            .body(ApiResponse.fail(e.getErrorCode().getCode(), e.getMessage()));
+    }
+}
+```
+
+자동으로 `401 Unauthorized + {"success":false,"error":{"code":"A001",...}}` 응답이 됩니다. **컨트롤러에 try-catch 없음.**
+
+> 💡 `@RestControllerAdvice`는 "모든 컨트롤러를 둘러싼 인터셉터" 같은 역할. 컨트롤러에서 던진 예외를 가로챕니다.
+
+### 3️⃣ `global/security/` + `global/config/SecurityConfig` — JWT 인증
+
+**JWT가 뭔가요?**
+- JSON Web Token. 사용자 정보를 서명된 문자열로 만들어 클라이언트에 발급.
+- 서버는 토큰을 보관하지 않음(stateless). 토큰 자체로 검증.
+- 형태: `xxxxx.yyyyy.zzzzz` (header.payload.signature)
+
+**흐름**:
+
+```
+[로그인]
+  Client ──POST /api/v1/auth/login (email,password)─→ AuthController
+                                                      │
+                                                      ↓
+                                       AuthService.login()
+                                          → 비밀번호 검증 (BCrypt)
+                                          → JwtTokenProvider.issueAccessToken(userId)
+                                          → "eyJhbG..." 토큰 생성
+                                       
+  Client ←─{"accessToken":"eyJhbG..."}── AuthController
+
+[이후 모든 보호 API 호출]
+  Client ──GET /api/v1/billing/...
+            Authorization: Bearer eyJhbG...
+                  ↓
+            JwtAuthFilter (OncePerRequestFilter)
+              → 헤더에서 토큰 추출
+              → JwtTokenProvider.parse(token) 검증
+              → SecurityContextHolder에 인증 정보 저장
+                  ↓
+            SecurityConfig.filterChain()
+              → /api/v1/auth/** = permitAll, 그 외 = authenticated
+                  ↓
+            BillingController.charge() 실행
+```
+
+**SecurityConfig 핵심**:
+
+```java
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    return http
+        .csrf(disable)
+        .sessionManagement(STATELESS)             // JWT니까 세션 안 씀
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/api/v1/auth/**", "/actuator/health").permitAll()
+            .anyRequest().authenticated()
+        )
+        .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+        .build();
+}
+```
+
+`PasswordEncoder`는 `BCryptPasswordEncoder` Bean으로 등록 → AuthService에서 주입받아 사용.
+
+> ⚠️ **`synapse.jwt.secret`은 반드시 32바이트 이상**. `application.yml`의 기본값은 개발용. 프로덕션은 환경변수로 주입.
+
+### 4️⃣ `global/config/RedisConfig` — Redis 연결
+
+W2에서는 빈 껍데기만. W3 이후 토큰 블랙리스트, 캐싱 등에 활용 예정.
+
+### 5️⃣ `global/util/` — 도메인 독립 유틸
+
+지금은 비어있지만, 날짜 포맷·문자열 마스킹·해시 헬퍼처럼 **도메인 의존 없는 유틸**만 들어갑니다. `billing` 전용 헬퍼는 `billing/` 내부에 두세요.
+
+---
+
+## ⚙️ 프로파일 시스템
+
+### 왜 4개로 나누나요?
+
+| 파일 | 언제 쓰이나 | 핵심 차이 |
+|---|---|---|
+| `application.yml` | 모든 환경 공통 | 앱 이름, JWT 설정, Actuator 노출 범위 |
+| `application-local.yml` | 개발자 로컬 | H2 인메모리 DB, 로컬 Redis, DEBUG 로그 |
+| `application-dev.yml` | 개발 서버 (k8s dev namespace 등) | 컨테이너 Postgres, INFO 로그, `ddl-auto: validate` |
+| `application-prod.yml` | 프로덕션 | 환경변수 시크릿, Hikari pool 튜닝, WARN 로그 |
+
+### 실행 방법
+
+```bash
+# 로컬 (기본 — application.yml의 active: local)
+./gradlew bootRun
+
+# 개발 서버용 빌드
+SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun
+
+# 프로덕션 (시크릿은 환경변수 필수)
+DB_URL=jdbc:postgresql://... DB_USERNAME=... DB_PASSWORD=... \
+  SPRING_PROFILES_ACTIVE=prod \
+  java -jar build/libs/synapse-platform-svc-0.2.0-SNAPSHOT.jar
+```
+
+### `ddl-auto`의 함정 — 절대 헷갈리지 마세요
+
+| 값 | 동작 | 언제? |
+|---|---|---|
+| `create-drop` | 시작할 때 테이블 생성, 종료 시 삭제 | local 테스트만 |
+| `create` | 매번 테이블 재생성 (데이터 날아감) | 위험. 거의 안 씀. |
+| `update` | 스키마 자동 변경 | dev 초기. 운영에선 금지. |
+| `validate` | 스키마가 entity와 일치하는지만 검증 | dev/staging 권장 |
+| `none` | 아무것도 안 함 | **prod 필수**. 마이그레이션은 Flyway/Liquibase로. |
+
+---
+
+## 🔄 W1 → W2 변화 요약
 
 | 항목 | W1 | W2 |
 |---|---|---|
 | 응답 포맷 | 도메인 DTO 직접 반환 | `ApiResponse<T>` 래핑 |
-| 예외 처리 | 도메인 컨트롤러마다 try-catch | `GlobalExceptionHandler` 일원화 |
+| 예외 처리 | (없음 — try-catch 필요) | `GlobalExceptionHandler` 일원화 |
+| 입력 검증 | 없음 | `@Valid` + Bean Validation (`@NotBlank`, `@Email` 등) |
 | 인증 | 없음 | JWT + `JwtAuthFilter` + `SecurityConfig` |
+| 비밀번호 | 평문 (스텁) | `BCryptPasswordEncoder` |
 | 설정 | `application.yml` 1개 | common + local/dev/prod 4개 |
-| 의존성 | web/jpa/validation | + security + jjwt + redis |
+| 의존성 | web/jpa/validation | + security + jjwt 0.12.x + spring-data-redis |
 
-## 프로파일
+---
 
-```bash
-# 로컬 (H2)
-./gradlew bootRun
+## ⚠️ W2에서 자주 하는 실수
 
-# 개발 환경 (Postgres + Redis 컨테이너)
-SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun
+### 1. `BusinessException`을 던지면서 핸들러 없이 try-catch
 
-# 프로덕션
-SPRING_PROFILES_ACTIVE=prod java -jar build/libs/synapse-platform-svc.jar
+```java
+// ❌ 컨트롤러에서 다시 catch — 핸들러가 일을 못 함
+try {
+    return ApiResponse.ok(authService.login(req));
+} catch (BusinessException e) {
+    return ApiResponse.fail(e.getErrorCode().getCode(), e.getMessage());
+}
+
+// ✅ 그냥 던지세요. 핸들러가 알아서 처리.
+return ApiResponse.ok(authService.login(req));
 ```
 
-## 다음 주차
+### 2. 도메인 코드에서 `global/`을 너무 광범위하게 import
 
-- `skeleton/platform/w3` — 도메인별 `kafka/` 추가, shared-events 의존
-- `skeleton/platform/w4` — `api/application/domain/infrastructure` + ArchUnit
+`global/`은 횡단 기반이지만, 도메인이 모든 걸 의존하면 결국 같은 문제가 됩니다.
+
+- ✅ `BusinessException`, `ErrorCode`, `ApiResponse` → OK
+- ✅ `JwtTokenProvider`, `PasswordEncoder` → OK (auth 도메인만)
+- ❌ `global/util/`을 모든 도메인이 super-helper로 만들기 → `util` 비대화
+
+**원칙**: `global/`은 "여러 도메인이 정말 공통으로 쓰는 것만". 그 도메인만 쓰면 도메인 내부에 두세요.
+
+### 3. JWT 시크릿을 yml에 하드코딩
+
+```yaml
+# ❌
+synapse:
+  jwt:
+    secret: "my-super-secret-key-do-not-leak-this"
+
+# ✅
+synapse:
+  jwt:
+    secret: ${SYNAPSE_JWT_SECRET}    # 환경변수로 주입
+```
+
+GitHub에 푸시한 순간 끝. **시크릿 스캐닝**에 걸립니다.
+
+### 4. `@Valid` 빼먹기
+
+```java
+// ❌ — Validation 어노테이션이 DTO에 있어도 작동 안 함
+public ApiResponse<TokenResponse> login(@RequestBody LoginRequest req) { ... }
+
+// ✅
+public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest req) { ... }
+```
+
+`@Valid` 없으면 `@NotBlank`, `@Email`이 무시됩니다. `MethodArgumentNotValidException` 발생도 안 함 = 핸들러 무용지물.
+
+### 5. `RestControllerAdvice`에서 너무 광범위한 catch
+
+```java
+// ❌ — 모든 예외를 한 코드로 묶으면 디버깅 지옥
+@ExceptionHandler(Exception.class)
+public ApiResponse<Void> handleAll(Exception e) {
+    return ApiResponse.fail("ERROR", "오류 발생");
+}
+
+// ✅ — 구체적 예외 먼저, Exception은 마지막에 (반드시 로그)
+@ExceptionHandler(Exception.class)
+public ApiResponse<Void> handleUnknown(Exception e) {
+    log.error("Unhandled exception", e);
+    return ApiResponse.fail(ErrorCode.INTERNAL_ERROR.getCode(), ErrorCode.INTERNAL_ERROR.getMessage());
+}
+```
+
+---
+
+## ▶️ 실행 + 검증
+
+### 1. 앱 띄우기 (로컬)
+
+```bash
+./gradlew bootRun
+```
+
+### 2. 인증 흐름 테스트
+
+```bash
+# 1) 로그인 시도 → 실패 응답이 통일 포맷으로 옴
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"pass1234"}'
+# → {"success":false,"error":{"code":"A001","message":"W3 스텁 — ..."},"timestamp":"..."}
+
+# 2) 보호 엔드포인트에 토큰 없이 접근 → 401
+curl http://localhost:8080/api/v1/audit/logs
+# → 401 Unauthorized
+
+# 3) 헬스체크 (permitAll)
+curl http://localhost:8080/actuator/health
+# → {"status":"UP"}
+```
+
+### 3. 입력 검증 동작 확인
+
+```bash
+# 이메일 형식 위반 → 400 + 통일 에러
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"not-an-email","password":""}'
+# → {"success":false,"error":{"code":"C001","message":"email: must be a well-formed email address"}, ...}
+```
+
+---
+
+## 🔭 다음 주차 미리보기
+
+| 브랜치 | 추가되는 것 |
+|---|---|
+| `skeleton/platform/w3` | 도메인별 `kafka/{producer,consumer}/`, 이벤트 토픽 컨벤션 |
+| `skeleton/platform/w4` | 각 도메인을 `api/application/domain/infrastructure`로 재구성 + ArchUnit |
+
+---
+
+## 📚 W2에서 새로 등장한 용어
+
+| 용어 | 의미 |
+|---|---|
+| **횡단 관심사 (Cross-Cutting Concern)** | 여러 도메인이 공통으로 필요한 기능. 인증, 로깅, 예외 처리, 응답 포맷 등. |
+| **`@RestControllerAdvice`** | 모든 컨트롤러를 감싸서 예외 처리·응답 변환을 일원화. |
+| **`@ExceptionHandler`** | 특정 예외 타입을 처리하는 메서드. |
+| **JWT (JSON Web Token)** | 서명된 토큰으로 사용자 신원을 증명. stateless 인증. |
+| **BCrypt** | 비밀번호 해시 함수. 같은 입력도 매번 다른 해시 생성(salt). |
+| **`PasswordEncoder`** | Spring Security의 비밀번호 해시 추상화. `BCryptPasswordEncoder`가 기본. |
+| **`OncePerRequestFilter`** | 한 요청에 한 번만 실행되는 필터 (forward/redirect 시 중복 방지). |
+| **`SecurityContextHolder`** | 현재 인증된 사용자 정보를 저장하는 ThreadLocal 컨테이너. |
+| **`@Valid`** | 컨트롤러 파라미터에 붙이면 DTO의 검증 어노테이션이 작동. |
+| **Bean Validation** | `@NotBlank`, `@Email`, `@Positive` 등 표준 검증. JSR-303/380. |
+| **프로파일 (Profile)** | 환경별 설정 묶음. `application-{프로파일}.yml`. |
+| **`ddl-auto`** | JPA가 시작 시 스키마를 어떻게 다룰지. `create-drop`/`validate`/`none`. |
+| **Hikari** | Spring Boot 기본 connection pool. `prod`에서 풀 크기 튜닝 필수. |
+| **Actuator** | Spring Boot의 운영 엔드포인트(health, metrics, info 등). |
+
+---
+
+## 🆘 막힐 때
+
+- `Cannot resolve symbol BusinessException` → 패키지 경로 확인. `com.synapse.platform.global.exception.*`.
+- 401 떠서 디버깅 못 함 → `SecurityConfig`의 `permitAll()` 목록에 임시 추가하고 작업 후 원복.
+- JWT 검증 실패 → `synapse.jwt.secret`이 32바이트 이상인지 확인.
+- `@Valid`인데 에러 메시지가 영어로 나옴 → 메시지 번들(`ValidationMessages.properties`)을 한국어로 추가 (W2에는 미포함).
