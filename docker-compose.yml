@@ -1,0 +1,14 @@
+services:
+  learning-java:
+    build:
+      context: ./learning-java
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+
+  learning-ai:
+    build:
+      context: ./learning-ai
+    ports:
+      - "8084:8084"
