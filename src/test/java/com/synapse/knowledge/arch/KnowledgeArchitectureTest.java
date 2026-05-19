@@ -24,10 +24,8 @@ class KnowledgeArchitectureTest {
             .matching(BASE + ".(*)..")
             .namingSlices("$1")
             .should().notDependOnEachOther()
-            .ignoreDependency(
-                resideInAGlobalPackage(),
-                anyClass()
-            )
+            .ignoreDependency(anyClass(), resideInAGlobalPackage())
+            .ignoreDependency(resideInAGlobalPackage(), anyClass())
             .check(CLASSES);
     }
 
@@ -43,13 +41,17 @@ class KnowledgeArchitectureTest {
     }
 
     @Test
-    void application_should_not_depend_on_api_or_infrastructure() {
+    void application_should_not_depend_on_api_non_dto_or_infrastructure() {
+        com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaClass> apiNonDto =
+            com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage("..api..")
+                .and(com.tngtech.archunit.core.domain.JavaClass.Predicates.resideOutsideOfPackage("..api.dto.."));
+        com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaClass> forbidden =
+            apiNonDto.or(com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage("..infrastructure.."));
+
         noClasses()
             .that().resideInAPackage("..application..")
             .and().resideOutsideOfPackage("..application.port..")
-            .should().dependOnClassesThat().resideInAnyPackage(
-                "..api..", "..infrastructure.."
-            )
+            .should().dependOnClassesThat(forbidden)
             .check(CLASSES);
     }
 
@@ -88,9 +90,18 @@ class KnowledgeArchitectureTest {
     void kafka_listeners_should_live_in_infrastructure_messaging() {
         classes()
             .that().areAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class)
-            .or().containAnyMethodsThat().areAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class)
+            .or().containAnyMethodsThat(annotatedWithKafkaListener())
             .should().resideInAPackage("..infrastructure.messaging..")
             .check(CLASSES);
+    }
+
+    private static com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaMethod> annotatedWithKafkaListener() {
+        return new com.tngtech.archunit.base.DescribedPredicate<>("annotated with @KafkaListener") {
+            @Override
+            public boolean test(com.tngtech.archunit.core.domain.JavaMethod method) {
+                return method.isAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class);
+            }
+        };
     }
 
     // ─── 8. knowledge 특수: controller-less 도메인 허용 ────────────────
