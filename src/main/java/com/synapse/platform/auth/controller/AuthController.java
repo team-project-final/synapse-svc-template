@@ -3,6 +3,8 @@ package com.synapse.platform.auth.controller;
 import com.synapse.platform.auth.dto.request.LoginRequest;
 import com.synapse.platform.auth.dto.response.TokenResponse;
 import com.synapse.platform.auth.service.AuthService;
+import com.synapse.platform.global.response.ApiResponse;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,7 +21,7 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public TokenResponse login(@RequestBody LoginRequest request) {
-        return authService.login(request);
+    public ApiResponse<TokenResponse> login(@Valid @RequestBody LoginRequest request) {
+        return ApiResponse.ok(authService.login(request));
     }
 }

@@ -1,42 +1,53 @@
-# synapse-platform-svc — W1 skeleton
+# synapse-platform-svc — W2 skeleton
 
-> **출발선**: 도메인 4-way split + 계층 3종 (`controller / service / repository`) + `entity / dto`.
-> 횡단 관심사(`global/`)는 W2에서 도입.
+> **추가**: `global/` 횡단 관심사 (config·exception·response·security·util) + 프로파일 분리 (local/dev/prod) + Spring Security + JWT 기본 설정.
 
-## 패키지 구조 (W1)
+## 패키지 구조 (W2)
 
 ```
 src/main/java/com/synapse/platform/
 ├── PlatformApplication.java
-├── auth/            ← 도메인 1
-│   ├── controller/  ── AuthController
-│   ├── service/     ── AuthService
-│   ├── repository/  ── UserRepository
-│   ├── entity/      ── User
-│   └── dto/
-│       ├── request/  ── LoginRequest
-│       └── response/ ── TokenResponse
-├── audit/           ← 도메인 2 (감사 로그)
-├── billing/         ← 도메인 3 (과금)
-└── notification/    ← 도메인 4 (알림)
+├── auth/ audit/ billing/ notification/      ← W1 그대로 (auth만 ApiResponse 적용 데모)
+└── global/                                  ← NEW
+    ├── config/
+    │   ├── SecurityConfig.java               JWT 필터 체인 + PasswordEncoder Bean
+    │   └── RedisConfig.java                  StringRedisTemplate Bean
+    ├── exception/
+    │   ├── ErrorCode.java                    enum: 도메인별 코드 (A001~, B001~, N001~)
+    │   ├── BusinessException.java
+    │   └── GlobalExceptionHandler.java       @RestControllerAdvice
+    ├── response/
+    │   └── ApiResponse<T>                    {success, data, error, timestamp}
+    ├── security/
+    │   ├── JwtTokenProvider.java             jjwt 0.12.x API
+    │   └── JwtAuthFilter.java                OncePerRequestFilter
+    └── util/                                 도메인 독립 유틸 전용 (현재 비어있음)
 ```
 
-각 도메인은 동일한 5-계층 패턴. **도메인 간 직접 import 금지** — 이 단계는 컴파일러가 막지 못하지만 컨벤션으로 약속, W4에서 ArchUnit으로 강제.
+## W1 → W2 변화 요약
 
-## 실행
+| 항목 | W1 | W2 |
+|---|---|---|
+| 응답 포맷 | 도메인 DTO 직접 반환 | `ApiResponse<T>` 래핑 |
+| 예외 처리 | 도메인 컨트롤러마다 try-catch | `GlobalExceptionHandler` 일원화 |
+| 인증 | 없음 | JWT + `JwtAuthFilter` + `SecurityConfig` |
+| 설정 | `application.yml` 1개 | common + local/dev/prod 4개 |
+| 의존성 | web/jpa/validation | + security + jjwt + redis |
+
+## 프로파일
 
 ```bash
+# 로컬 (H2)
 ./gradlew bootRun
-```
 
-엔드포인트 (스텁):
-- `POST /api/v1/auth/login`
-- `GET  /api/v1/audit/logs`
-- `POST /api/v1/billing/charge`
-- `POST /api/v1/notifications`
+# 개발 환경 (Postgres + Redis 컨테이너)
+SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun
+
+# 프로덕션
+SPRING_PROFILES_ACTIVE=prod java -jar build/libs/synapse-platform-svc.jar
+```
 
 ## 다음 주차
 
-- `skeleton/platform/w2` — `global/` (config·exception·response·security·util)
-- `skeleton/platform/w3` — 도메인별 `kafka/` 추가
+- `skeleton/platform/w3` — 도메인별 `kafka/` 추가, shared-events 의존
 - `skeleton/platform/w4` — `api/application/domain/infrastructure` + ArchUnit
