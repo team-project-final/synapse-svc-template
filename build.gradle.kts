@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.synapse"
-version = "0.3.0-SNAPSHOT"
+version = "0.4.0-SNAPSHOT"
 
 java {
     toolchain {
@@ -26,10 +26,7 @@ dependencies {
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
-
-    // W3 NEW
     implementation("org.springframework.kafka:spring-kafka")
-    // implementation("com.synapse:shared-events:1.0.0")  // shared 멀티모듈 publish 후
 
     runtimeOnly("com.h2database:h2")
     runtimeOnly("org.postgresql:postgresql")
@@ -37,6 +34,10 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
+
+    // W4 NEW
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
+
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -1,148 +1,120 @@
-# synapse-knowledge-svc — W3 skeleton
+# synapse-knowledge-svc — W4 skeleton (최종)
 
-> **추가**: 도메인별 `kafka/{producer,consumer}/`. **chunking이 비로소 동작 가능 상태**가 됩니다.
-
----
-
-## 🎯 chunking의 진짜 모습 — Kafka가 입구
-
-W1/W2에서 chunking은 외부 invokable이 아니었습니다. W3에서 비로소:
-
-```
-[전체 파이프라인]
-
-Client ──POST /api/v1/notes──→ NoteController
-                                    ↓
-                              NoteService.create()
-                                    ↓
-                              NoteRepository.save()
-                                    ↓
-                  NoteEventPublisher.publishNoteCreated()
-                                    ↓
-                  ┌─────────────────────────────────┐
-                  │ Kafka                            │
-                  │ topic: synapse.knowledge.note.   │
-                  │        created.v1                │
-                  └────────────┬────────────────────┘
-                               ↓
-        ┌──────────────────────┴──────────────────────┐
-        ↓                                             ↓
-  chunking/NoteCreatedConsumer              graph/NoteCreatedConsumer
-        ↓ (groupId: chunking)                          ↓ (groupId: graph)
-  ChunkingService.process()                  Node 자동 생성
-        ↓
-  ChunkEventPublisher.publishChunkReady()
-        ↓
-  Kafka: synapse.knowledge.chunking.chunk-ready.v1
-        ↓
-  graph/ChunkReadyConsumer
-        ↓ (groupId: graph)
-  유사 노드 찾기 → edge 자동 생성
-```
-
-**핵심 관찰**:
-- `note.NoteService`는 chunking이나 graph를 **모른다**. 그저 NoteCreated만 발행.
-- chunking은 controller가 아니라 **Kafka가 입구**. controller-less 도메인의 본질.
-- graph는 **두 종류 이벤트 구독**: NoteCreated(직접) + ChunkReady(chunking 통과 후).
+> **추가**: 라이트 헥사고날 재구성 + ArchUnit. knowledge 특수: **controller-less 도메인 예외 룰**.
 
 ---
 
-## 📂 W3에서 추가된 구조
+## 📂 W4 구조 — 3 도메인 (chunking은 api/ 없음)
 
 ```
-src/main/java/com/synapse/knowledge/
+com.synapse.knowledge/
 ├── KnowledgeApplication.java
 │
-├── note/
-│   ├── controller/ service/ repository/ entity/ dto/
-│   └── kafka/                                       ← NEW
-│       └── producer/NoteEventPublisher                NoteCreated 발행
-│
-├── graph/
-│   ├── controller/ service/ repository/ entity/ dto/
-│   └── kafka/                                       ← NEW
-│       └── consumer/
-│           ├── NoteCreatedConsumer                  note → graph 노드 자동 생성
-│           └── ChunkReadyConsumer                   chunking → graph 링크 갱신
-│
-├── chunking/                                        ← controller 여전히 없음
-│   ├── service/ repository/ entity/
-│   └── kafka/                                       ← NEW (드디어 입구 생김)
-│       ├── consumer/NoteCreatedConsumer              ChunkingService.process() 트리거
-│       └── producer/ChunkEventPublisher              ChunkReady 발행
-│
-└── global/
-    ├── config/{KafkaConfig (NEW), SecurityConfig, RedisConfig}
-    └── kafka/event/                                 ← NEW (임시)
-        ├── NoteCreated.java
-        └── ChunkReady.java
+├── note/                     api/{Controller, dto/}, application/{Service, port/}, domain/{Note, policy/}, infrastructure/{persistence/, messaging/}
+├── graph/                    api/, application/{port/{NodePort,EdgePort,EventPort?}}, domain/{Node, Edge, policy/GraphLinkPolicy}, infrastructure/{persistence/, messaging/}
+├── chunking/                 (api/ 없음!) application/{Service, port/}, domain/{ChunkJob, Chunk, policy/ChunkingPolicy}, infrastructure/{persistence/, messaging/}
+└── global/                   config/, exception/, response/, security/, util/, kafka/event/
 ```
 
+### chunking의 W4 구조 — controller-less 도메인의 정석
+
+```
+chunking/
+├── application/
+│   ├── ChunkingService.java
+│   └── port/{ChunkJobPort, ChunkPort, EventPort}
+├── domain/
+│   ├── ChunkJob.java, Chunk.java
+│   └── policy/ChunkingPolicy.java     (청크 크기·overlap)
+└── infrastructure/
+    ├── persistence/
+    │   ├── ChunkJobJpaRepository.java (package-private)
+    │   ├── ChunkJpaRepository.java    (package-private)
+    │   └── ChunkingPersistenceAdapter.java   (ChunkJobPort + ChunkPort 구현)
+    └── messaging/
+        ├── NoteCreatedKafkaConsumer.java     ← 진짜 입구
+        └── ChunkEventKafkaAdapter.java        (EventPort 구현)
+```
+
+`api/` 패키지가 **없습니다**. ArchUnit이 이걸 위반으로 잡으면 안 됨 → 룰 8번에서 예외 처리.
+
 ---
 
-## 📛 토픽 일람
+## 🛡 ArchUnit 8개 룰
 
-| 토픽 | Publisher | Consumer | 의미 |
-|---|---|---|---|
-| `synapse.knowledge.note.created.v1` | note | chunking, graph | 노트가 생성됨 |
-| `synapse.knowledge.chunking.chunk-ready.v1` | chunking | graph | 청크 처리 완료 |
+`src/test/java/com/synapse/knowledge/arch/KnowledgeArchitectureTest.java`:
 
-향후 추가 예정:
-- `synapse.knowledge.note.updated.v1` (제목/본문 변경 시 chunking 재실행)
-- `synapse.knowledge.note.deleted.v1` (graph 노드 삭제 트리거)
-
----
-
-## 🔁 W2 → W3 변화 요약
-
-| 항목 | W2 | W3 |
+| # | 룰 | platform 동일? |
 |---|---|---|
-| chunking 동작 | 외부에서 invokable 아님 | Kafka 컨슈머가 트리거 |
-| 도메인 간 통신 | 컨벤션 (직접 호출 가능했음) | Kafka 이벤트 only |
-| 의존성 | + security/jjwt/redis | + spring-kafka, spring-kafka-test |
-| 설정 | 4 프로파일 | + `spring.kafka.*` |
+| 1 | 도메인 슬라이스 격리 | 동일 |
+| 2 | `domain/`은 다른 계층 import 금지 | 동일 |
+| 3 | `application/`은 api·infrastructure import 금지 (port 예외) | 동일 |
+| 4 | `api/`는 infrastructure import 금지 | 동일 |
+| 5 | `domain.policy/`는 외부 의존성 0 | 동일 |
+| 6 | JpaRepository는 infrastructure.persistence에만 | 동일 |
+| 7 | @KafkaListener는 infrastructure.messaging에만 | 동일 |
+| **8** | **note·graph는 Controller 보유 필수 (chunking 예외)** | **knowledge 전용** |
 
-자세한 통증 → 해법 분석은 [platform/w3 README](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md) 참고.
-
----
-
-## 🚀 W4에서 추가되는 것들 — knowledge 특수
-
-W3까지의 service가 너무 많은 일을 한다는 통증은 다른 서비스와 동일. 추가로 knowledge는:
-
-### controller-less 도메인의 ArchUnit 룰 처리
-
-플랫폼 ArchUnit 룰 중 일부는 chunking에서 **자동 통과**되거나 **수정 필요**:
-
-- "controller는 RestController 어노테이션 필수" → chunking은 controller 자체가 없어 룰 무효 (자동 통과)
-- "각 도메인 슬라이스에 api 패키지 존재" → chunking에는 api 패키지가 비어있음 → **예외 룰 추가 필요**
-
-W4 ArchUnit에 다음과 같은 예외 처리 추가:
+### 룰 8 — controller-less 도메인 예외
 
 ```java
 @Test
-void controller_less_domains_may_skip_api_package() {
+void non_pipeline_domains_should_have_controller() {
     classes()
-        .that().resideInAPackage("..chunking..")    // chunking은 api 없어도 OK
-        .should()...;
+        .that().resideInAnyPackage(BASE + ".note.api..", BASE + ".graph.api..")
+        .and().haveSimpleNameEndingWith("Controller")
+        .should().beAnnotatedWith(RestController.class)
+        .check(CLASSES);
 }
 ```
 
-### W4에 추가되는 항목들
+note·graph에 `Controller`라는 이름의 클래스가 있다면 반드시 `@RestController`여야 함.
+chunking은 패키지 자체가 룰의 대상이 아니라 자동 통과.
 
-| 항목 | knowledge 특수 |
-|---|---|
-| `note/api/, graph/api/` 재구성 | platform과 동일 패턴 |
-| `chunking/api/` 비어있음 | controller-less 도메인의 예외 |
-| `application/port/` | NotePort, NodePort, EdgePort, ChunkJobPort + 도메인별 EventPort |
-| `domain/policy/` | NoteValidationPolicy, ChunkingPolicy (청크 크기·중첩 룰) |
-| `infrastructure/persistence/`, `messaging/` | 4 도메인 (chunking 포함) 모두 |
-| ArchUnit | 7룰 + chunking controller-less 예외 |
-
-자세한 통증 → 해법 분석은 [platform/w3 README의 W4 항목 섹션](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md) 참고.
+> 💡 다른 방식: 룰을 "controller가 있어야 한다"가 아니라 **"controller가 있다면 @RestController여야 한다"**로 약하게 작성. 새 controller-less 도메인이 추가되어도 룰 수정 불필요.
 
 ---
 
-## 🔭 다음 주차
+## 🔄 W3 → W4 변화 요약
 
-- `skeleton/knowledge/w4` — 라이트 헥사고날 + ArchUnit (controller-less 예외 룰 포함)
+| 항목 | W3 | W4 |
+|---|---|---|
+| 도메인 패키지 | `controller/service/repository/entity/dto/kafka/` | `api/application/domain/infrastructure/` |
+| chunking 구조 | controller 없음, service 직접 호출 | controller 없음 + 명시적 port/adapter |
+| GraphService 의존 | NodeRepository, EdgeRepository 구체 | NodePort + EdgePort 인터페이스 |
+| Persistence Adapter | 도메인당 1개 | graph는 Node+Edge를 한 adapter가 양쪽 port 구현 |
+| 강제 메커니즘 | 컨벤션 (문서) | **ArchUnit 8룰 (knowledge 특수 1개 포함)** |
+
+자세한 통증 → 해법 분석은 [platform/w3의 W4 항목 섹션](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md) 참고.
+
+---
+
+## ▶️ 실행 + 검증
+
+```bash
+./gradlew bootRun                    # H2 + 로컬 Kafka (선택)
+./gradlew test                       # 전체 + ArchUnit
+./gradlew test --tests "*ArchitectureTest"   # 룰만
+```
+
+위반 시뮬레이션:
+- chunking에 RestController 추가 → 룰 8은 안 잡지만, 그 외 룰들은 작동.
+- note의 service에서 graph 클래스 import → 룰 1이 잡음.
+- domain/policy/에 @Component → 룰 5가 잡음.
+
+---
+
+## 🎓 knowledge가 W4에서 배우는 것
+
+1. **모든 도메인이 같은 모양일 필요 없음** — chunking처럼 controller-less 도메인은 정당.
+2. **ArchUnit 룰은 도메인 특수성을 반영해야 함** — 일률 적용은 오히려 위반 강제.
+3. **두 entity가 한 도메인이면 한 adapter가 여러 port 구현 OK** — graph의 GraphPersistenceAdapter가 NodePort + EdgePort.
+
+---
+
+## 다음 단계 (template 외부)
+
+W4가 마지막 — synapse-knowledge-svc 실제 레포로 옮기고:
+1. synapse-shared 의존성 활성화 → `global/kafka/event/` 삭제
+2. Vector DB (예: pgvector) 통합 → chunking이 임베딩까지
+3. graph DB (Neo4j) 선택 시 → infrastructure/persistence/만 교체 (application은 무변)
