@@ -1,53 +1,70 @@
-# synapse-platform-svc — W2 skeleton
+# synapse-platform-svc — W3 skeleton
 
-> **추가**: `global/` 횡단 관심사 (config·exception·response·security·util) + 프로파일 분리 (local/dev/prod) + Spring Security + JWT 기본 설정.
+> **추가**: 도메인별 `kafka/` 패키지 (producer/consumer) + Kafka 인프라 설정.
+> 도메인 간 직접 호출은 **0건**. `auth → notification` 환영 알림 = 이벤트 경유.
 
-## 패키지 구조 (W2)
+## 패키지 구조 (W3)
 
 ```
 src/main/java/com/synapse/platform/
 ├── PlatformApplication.java
-├── auth/ audit/ billing/ notification/      ← W1 그대로 (auth만 ApiResponse 적용 데모)
-└── global/                                  ← NEW
+├── auth/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                        ← NEW
+│       └── producer/UserEventPublisher
+├── audit/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                        ← NEW
+│       └── consumer/AuditEventConsumer               (topicPattern: synapse.*)
+├── billing/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                        ← NEW
+│       ├── producer/BillingEventPublisher
+│       └── consumer/PaymentCompletedConsumer         (외부 PG 콜백)
+├── notification/
+│   ├── controller/ service/ repository/ entity/ dto/
+│   └── kafka/                                        ← NEW
+│       └── consumer/
+│           ├── UserRegisteredConsumer                (auth → 환영 알림)
+│           └── NotificationRequestedConsumer         (광역 알림 요청)
+└── global/
     ├── config/
-    │   ├── SecurityConfig.java               JWT 필터 체인 + PasswordEncoder Bean
-    │   └── RedisConfig.java                  StringRedisTemplate Bean
-    ├── exception/
-    │   ├── ErrorCode.java                    enum: 도메인별 코드 (A001~, B001~, N001~)
-    │   ├── BusinessException.java
-    │   └── GlobalExceptionHandler.java       @RestControllerAdvice
-    ├── response/
-    │   └── ApiResponse<T>                    {success, data, error, timestamp}
-    ├── security/
-    │   ├── JwtTokenProvider.java             jjwt 0.12.x API
-    │   └── JwtAuthFilter.java                OncePerRequestFilter
-    └── util/                                 도메인 독립 유틸 전용 (현재 비어있음)
+    │   ├── KafkaConfig.java                          ← NEW (producer/consumer 팩토리)
+    │   ├── SecurityConfig.java
+    │   └── RedisConfig.java
+    └── kafka/event/                                  ← NEW (임시 stub)
+        ├── UserRegistered.java
+        ├── BillingChargeRequested.java
+        ├── PaymentCompleted.java
+        └── NotificationRequested.java
 ```
 
-## W1 → W2 변화 요약
+## 이벤트 토픽 컨벤션
 
-| 항목 | W1 | W2 |
+`synapse.{service}.{domain}.{event-name}.v{version}` — 도메인 간 통신은 이 네이밍.
+
+| 토픽 | Publisher | Consumer |
 |---|---|---|
-| 응답 포맷 | 도메인 DTO 직접 반환 | `ApiResponse<T>` 래핑 |
-| 예외 처리 | 도메인 컨트롤러마다 try-catch | `GlobalExceptionHandler` 일원화 |
-| 인증 | 없음 | JWT + `JwtAuthFilter` + `SecurityConfig` |
-| 설정 | `application.yml` 1개 | common + local/dev/prod 4개 |
-| 의존성 | web/jpa/validation | + security + jjwt + redis |
+| `synapse.platform.auth.user-registered.v1` | auth | audit, notification |
+| `synapse.platform.billing.charge-requested.v1` | billing | audit, (외부 PG) |
+| `synapse.notification.requested.v1` | (광역) | notification |
+| `synapse.external.pg.payment-completed.v1` | PG 외부 | billing |
+| `synapse.*` (패턴 매칭) | (모든 도메인) | audit |
 
-## 프로파일
+## shared-events 마이그레이션 예정
 
-```bash
-# 로컬 (H2)
-./gradlew bootRun
+`global/kafka/event/`의 record들은 임시 stub.
+synapse-shared 멀티모듈 publish 후 `com.synapse.shared.event.*`로 교체 (build.gradle.kts 주석 참조).
 
-# 개발 환경 (Postgres + Redis 컨테이너)
-SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun
+## W2 → W3 변화 요약
 
-# 프로덕션
-SPRING_PROFILES_ACTIVE=prod java -jar build/libs/synapse-platform-svc.jar
-```
+| 항목 | W2 | W3 |
+|---|---|---|
+| 도메인 간 통신 | 미정의 (사실상 직접 호출 가능) | Kafka 이벤트 only |
+| 의존성 | + security + jjwt + redis | + spring-kafka + spring-kafka-test |
+| 설정 | 4 프로파일 | + `spring.kafka.*` |
+| 도메인 패키지 | controller/service/repository/entity/dto | + `kafka/{producer,consumer}/` |
 
 ## 다음 주차
 
-- `skeleton/platform/w3` — 도메인별 `kafka/` 추가, shared-events 의존
-- `skeleton/platform/w4` — `api/application/domain/infrastructure` + ArchUnit
+- `skeleton/platform/w4` — 각 도메인을 `api/application/domain/infrastructure`로 재구성 + ArchUnit으로 강제
