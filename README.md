@@ -1,126 +1,141 @@
-# synapse-engagement-svc — W3 skeleton
+# synapse-engagement-svc — W4 skeleton (최종)
 
-> **추가**: gamification이 **4-way fan-in 컨슈머**로 변신. 외부 3개 서비스 + 자체 community 이벤트를 통합 수신.
-
----
-
-## 🎯 fan-in 구조 — engagement만의 특수성
-
-```
-                            ┌──── synapse.platform.auth.user-registered.v1
-                            │     (platform 서비스)
-                            │
-                            ├──── synapse.engagement.community.comment-created.v1
-                            │     (자체 community 도메인)
-                            │
-   gamification consumer ◀──┤
-   (4개 @KafkaListener)     ├──── synapse.learning.card.card-reviewed.v1
-                            │     (learning 서비스)
-                            │
-                            └──── synapse.knowledge.note.created.v1
-                                  (knowledge 서비스)
-```
-
-gamification은 **4개 외부 이벤트 소스**를 동시에 듣고, 각각 다른 점수·뱃지 정책을 적용. 이게 fan-in의 본질.
-
-> 💡 **왜 한 도메인에 컨슈머가 4개나?** "활동 기반 보상"이라는 단일 책임이지만, 활동 소스가 여러 곳. **책임은 하나**, **입력만 여럿**. 컨슈머 분리는 토픽이 다르기 때문일 뿐.
+> **추가**: 라이트 헥사고날 + ArchUnit. **engagement의 핵심: `gamification/domain/policy/`에 룰 격리.**
 
 ---
 
-## 📂 W3 추가 구조
+## 📂 W4 구조
 
 ```
 com.synapse.engagement/
+├── EngagementApplication.java
+│
 ├── community/
-│   ├── controller/ service/ repository/ entity/ dto/
-│   └── kafka/                                          ← NEW
-│       └── producer/CommunityEventPublisher             CommentCreated 발행
+│   ├── api/{PostController, dto/}
+│   ├── application/{PostService, port/{PostPort, CommentPort, EventPort}}
+│   ├── domain/{Post, Comment, policy/PostValidationPolicy}
+│   └── infrastructure/
+│       ├── persistence/{PostJpaRepository, CommentJpaRepository, CommunityPersistenceAdapter}
+│       └── messaging/CommunityEventKafkaAdapter
 │
 ├── gamification/
-│   ├── controller/ service/ repository/ entity/ dto/
-│   └── kafka/                                          ← NEW
-│       └── consumer/                                    fan-in 4개!
-│           ├── UserRegisteredConsumer                   platform → EARLY_ADOPTER
-│           ├── CommentCreatedConsumer                   community → 댓글 포인트
-│           ├── CardReviewedConsumer                     learning → 복습 포인트
-│           └── NoteCreatedConsumer                      knowledge → 작성 포인트
+│   ├── api/{GamificationController, dto/}
+│   ├── application/{GamificationService, port/{PointPort, BadgePort}}
+│   ├── domain/
+│   │   ├── Point.java, Badge.java
+│   │   └── policy/                                ← engagement의 핵심
+│   │       ├── PointPolicy.java                    활동 → 점수 매핑
+│   │       └── BadgeAchievementPolicy.java         누적 → 뱃지 단계
+│   └── infrastructure/
+│       ├── persistence/{PointJpaRepository, BadgeJpaRepository, GamificationPersistenceAdapter}
+│       └── messaging/                              fan-in 컨슈머 4개
+│           ├── UserRegisteredKafkaConsumer         platform 이벤트
+│           ├── CommentCreatedKafkaConsumer         community 이벤트
+│           ├── CardReviewedKafkaConsumer           learning 이벤트
+│           └── NoteCreatedKafkaConsumer            knowledge 이벤트
 │
-└── global/
-    ├── config/{KafkaConfig (NEW), ...}
-    └── kafka/event/                                    ← NEW (4개 이벤트 stub)
-        ├── UserRegistered.java (외부 → 임시 stub)
-        ├── CommentCreated.java
-        ├── CardReviewed.java
-        └── NoteCreated.java
+└── global/   ← W2~W3 그대로
 ```
 
 ---
 
-## 📛 토픽 일람 (engagement 관점)
+## 🎯 engagement의 W4 핵심: `domain/policy/` 격리
 
-| 토픽 | 방향 | 발행자/수신자 | 보상 |
-|---|---|---|---|
-| `synapse.engagement.community.comment-created.v1` | OUT | community 발행 | (다른 서비스도 구독 가능) |
-| `synapse.platform.auth.user-registered.v1` | IN | gamification 수신 | EARLY_ADOPTER 뱃지 |
-| `synapse.learning.card.card-reviewed.v1` | IN | gamification 수신 | 복습 quality × 5점 |
-| `synapse.knowledge.note.created.v1` | IN | gamification 수신 | 20점 |
+다른 서비스의 policy는 "검증 룰" 수준이지만, gamification의 policy는 **비즈니스 자체**:
 
-**OUT 1 / IN 3 = 수신이 발행보다 많은 도메인.** 다른 서비스들과 정반대 비율.
-
----
-
-## 🔁 W2 → W3 변화 요약
-
-| 항목 | W2 | W3 |
-|---|---|---|
-| gamification 동작 | API 호출 시에만 (스텁) | 4개 외부 이벤트로 자동 트리거 |
-| community 발행 | (없음) | CommentCreated 발행 |
-| shared-events 의존 | 없음 | 4개 이벤트 클래스 (스텁) |
-| 컨슈머 groupId | (없음) | `synapse-engagement-gamification` (4개 토픽 한 그룹) |
-
-> 💡 **모든 fan-in 컨슈머가 같은 groupId** — engagement-svc 인스턴스가 N개 있어도 한 메시지는 한 인스턴스만 처리.
-
-자세한 통증 → 해법은 [platform/w3 README](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md).
-
----
-
-## 🚀 W4에서 추가되는 것들 — engagement 특수
-
-### gamification의 `domain/policy/`가 핵심
-
-다른 도메인에서 policy는 "검증 룰" 수준이지만, gamification에서는 **점수 매핑 정책 자체**가 핵심 비즈니스:
+### `PointPolicy` — 활동 → 점수 매핑
 
 ```java
-// W4: domain/policy/PointPolicy.java
 public final class PointPolicy {
-    public static long forCommentCreated() { return 10; }
-    public static long forCardReviewed(int quality) { return quality * 5L; }
-    public static long forNoteCreated() { return 20; }
-}
-
-// domain/policy/BadgeAchievementPolicy.java
-public final class BadgeAchievementPolicy {
-    public static String evaluate(long totalPoints, int commentCount, int noteCount) {
-        if (totalPoints >= 10000) return "LEGEND";
-        // ...
+    public static long pointsFor(String reason, int rawValue) {
+        return switch (reason) {
+            case REASON_COMMENT -> 10;
+            case REASON_NOTE_WRITE -> 20;
+            case REASON_CARD_REVIEW -> rawValue * 5L;
+            case REASON_FIRST_LOGIN -> 100;
+            default -> 0;
+        };
     }
 }
 ```
 
-**왜 격리?** 운영하면서 "댓글 점수 10→15로 바꾸자"가 자주 일어남. 정책 한 파일만 수정하면 끝. 인프라/API 코드 안 봐도 됨. 단위 테스트도 Spring 없이.
+운영 중 "댓글 점수 10→15로 바꿔주세요"가 자주 들어옵니다. 이 한 파일만 수정. Spring 안 띄움. 단위 테스트 100ms.
 
-### W4 변화 요약
+### `BadgeAchievementPolicy` — 누적 → 뱃지
 
-| 항목 | 일반 |
-|---|---|
-| api / application / domain / infrastructure 재구성 | 다른 svc와 동일 |
-| `domain/policy/` 격리 강조 | **engagement는 룰이 비즈니스 자체** |
-| ArchUnit | 7룰 표준 (controller-less 예외 불필요) |
+```java
+private static final List<Threshold> THRESHOLDS = List.of(
+    new Threshold(100,      "STARTER"),
+    new Threshold(1_000,    "ENTHUSIAST"),
+    new Threshold(10_000,   "EXPERT"),
+    new Threshold(100_000,  "LEGEND")
+);
+```
+
+새 뱃지 추가도 이 한 줄. **운영진이 직접 수정할 수도 있을 만큼 단순**.
+
+### 컨슈머는 policy를 통해서만 점수 부여
+
+```java
+// CardReviewedKafkaConsumer
+gamificationService.awardForEvent(event.userId(), PointPolicy.REASON_CARD_REVIEW, event.quality());
+
+// GamificationService
+public void awardForEvent(Long userId, String reason, int rawValue) {
+    long amount = PointPolicy.pointsFor(reason, rawValue);   // ← policy 위임
+    pointPort.save(new Point(userId, amount, reason));
+}
+```
+
+컨슈머·서비스에는 점수 매핑이 **하드코딩되지 않음**. 점수 조정 = policy 한 파일.
+
+---
+
+## 🛡 ArchUnit 7룰 (engagement 표준)
+
+| # | 룰 | 비고 |
+|---|---|---|
+| 1 | 도메인 슬라이스 격리 (community ↛ gamification) | global 예외 |
+| 2 | domain → 다른 계층 의존 금지 | |
+| 3 | application → api/infrastructure 의존 금지 (port 예외) | |
+| 4 | api → infrastructure 의존 금지 | |
+| 5 | **domain.policy 외부 의존 0 — engagement에선 가장 중요한 룰** | |
+| 6 | JpaRepository = infrastructure.persistence만 | |
+| 7 | @KafkaListener = infrastructure.messaging만 | |
+
+knowledge처럼 "controller-less 예외"는 불필요 (community/gamification 모두 컨트롤러 보유).
+
+---
+
+## 🔄 W3 → W4 변화 요약
+
+| 항목 | W3 | W4 |
+|---|---|---|
+| 점수 매핑 | 컨슈머마다 하드코딩 (`awardPoint(uid, 10, ...)`) | `PointPolicy.pointsFor()` 한 곳에 |
+| Persistence | JpaRepository 직접 service에서 | port 인터페이스 + Adapter |
+| 의존 방향 | application → infrastructure | application ← infrastructure |
+| 강제 | 컨벤션 | ArchUnit 7룰 |
 
 자세한 통증 → 해법: [platform/w3 README의 W4 항목 섹션](https://github.com/team-project-final/synapse-svc-template/blob/skeleton/platform/w3/README.md).
 
 ---
 
-## 🔭 다음
+## 🎓 engagement가 W4에서 가장 잘 보여주는 것
 
-- `skeleton/engagement/w4` — 라이트 헥사고날 + ArchUnit + gamification policy 격리
+**"비즈니스 룰을 어디에 두는가"의 모범 사례.**
+
+- 점수·뱃지 변경이 잦은 도메인 = policy 격리의 가치가 가장 큼
+- 단위 테스트가 Spring 없이 가능 → CI에서 점수 룰 수정 PR이 1초 안에 검증
+- 운영진/PM이 코드를 읽기 쉬움 → `PointPolicy.java` 한 장만 보여줘도 점수 체계 이해
+
+policy 격리가 의미 없는 도메인(단순 CRUD)에서 이 패턴을 쓰면 오버엔지니어링.
+policy 격리가 핵심인 도메인(gamification)에서는 이 패턴이 자연스러움.
+
+---
+
+## 다음 단계 (template 외부)
+
+W4가 마지막 — 실제 synapse-engagement-svc 레포로 옮기고:
+1. synapse-shared 의존성 활성화 → `global/kafka/event/` 삭제
+2. PointPolicy를 YAML로 외부화 검토 (운영진 직접 수정 가능하게)
+3. 리더보드 SQL aggregation 구현
