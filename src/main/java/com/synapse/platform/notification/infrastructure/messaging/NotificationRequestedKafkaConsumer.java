@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 class NotificationRequestedKafkaConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationRequestedKafkaConsumer.class);
-    public static final String TOPIC = "synapse.notification.requested.v1";
+    public static final String TOPIC = "synapse.platform.notification.requested.v1";
 
     private final NotificationService notificationService;
 
