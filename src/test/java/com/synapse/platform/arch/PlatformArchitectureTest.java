@@ -19,17 +19,16 @@ class PlatformArchitectureTest {
 
     // ─── 1. 도메인 격리 ─────────────────────────────────────────────────
     // auth/, audit/, billing/, notification/ 슬라이스 간 직접 의존 금지
-    // (global/ 패키지는 슬라이스에서 제외)
+    // (target이 global/이거나 source가 global/인 의존은 모두 허용 — global은 횡단 인프라)
     @Test
     void domain_slices_should_not_depend_on_each_other() {
         slices()
             .matching(BASE + ".(*)..")
             .namingSlices("$1")
             .should().notDependOnEachOther()
-            .ignoreDependency(
-                resideInAGlobalPackage(),
-                anyClass()
-            )
+            // global은 횡단 — source/target 어느 쪽이든 허용
+            .ignoreDependency(anyClass(), resideInAGlobalPackage())
+            .ignoreDependency(resideInAGlobalPackage(), anyClass())
             .check(CLASSES);
     }
 
@@ -46,13 +45,19 @@ class PlatformArchitectureTest {
     }
 
     @Test
-    void application_should_not_depend_on_api_or_infrastructure() {
+    void application_should_not_depend_on_api_non_dto_or_infrastructure() {
+        // application은 api/dto/ (입출력 DTO)는 사용 가능하지만 controller나 infrastructure는 금지.
+        // dto는 application과 api가 공유하는 데이터 계약 (헥사고날 라이트 합의).
+        com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaClass> apiNonDto =
+            com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage("..api..")
+                .and(com.tngtech.archunit.core.domain.JavaClass.Predicates.resideOutsideOfPackage("..api.dto.."));
+        com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaClass> forbidden =
+            apiNonDto.or(com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage("..infrastructure.."));
+
         noClasses()
             .that().resideInAPackage("..application..")
             .and().resideOutsideOfPackage("..application.port..")
-            .should().dependOnClassesThat().resideInAnyPackage(
-                "..api..", "..infrastructure.."
-            )
+            .should().dependOnClassesThat(forbidden)
             .check(CLASSES);
     }
 
@@ -92,9 +97,18 @@ class PlatformArchitectureTest {
     void kafka_listeners_should_live_in_infrastructure_messaging() {
         classes()
             .that().areAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class)
-            .or().containAnyMethodsThat().areAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class)
+            .or().containAnyMethodsThat(annotatedWithKafkaListener())
             .should().resideInAPackage("..infrastructure.messaging..")
             .check(CLASSES);
+    }
+
+    private static com.tngtech.archunit.base.DescribedPredicate<com.tngtech.archunit.core.domain.JavaMethod> annotatedWithKafkaListener() {
+        return new com.tngtech.archunit.base.DescribedPredicate<>("annotated with @KafkaListener") {
+            @Override
+            public boolean test(com.tngtech.archunit.core.domain.JavaMethod method) {
+                return method.isAnnotatedWith(org.springframework.kafka.annotation.KafkaListener.class);
+            }
+        };
     }
 
     // ─── helpers ──────────────────────────────────────────────────────
