@@ -422,6 +422,233 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ---
 
+## 🚀 W3에서 추가되는 것들 — 각 항목이 **왜** 필요한가
+
+W2에서는 횡단 관심사를 한 곳에 모았습니다. 하지만 **도메인끼리 어떻게 통신하는지**는 여전히 미정의입니다. W3은 이 빈자리를 채웁니다.
+
+### 1️⃣ 도메인별 `kafka/{producer,consumer}/` 패키지 — 이벤트 통신 채널
+
+**W2에서 무엇이 아픈가?**
+
+회원가입 직후 환영 메일을 보내야 한다고 합시다. 가장 직관적인 코드:
+
+```java
+// auth/service/AuthService.java
+@Service
+public class AuthService {
+    private final UserRepository userRepository;
+    private final NotificationService notificationService;   // ← 다른 도메인 의존!
+    private final AuditService auditService;                  // ← 또 다른 도메인 의존!
+
+    public TokenResponse register(SignupRequest req) {
+        User user = userRepository.save(...);
+
+        // 1) 환영 메일
+        notificationService.sendWelcomeEmail(user.getEmail());
+        // 2) 감사 로그
+        auditService.record("USER_REGISTERED", user.getId());
+        // 3) 다음 달엔 마케팅도 추가될 예정...
+
+        return new TokenResponse(...);
+    }
+}
+```
+
+**5가지 통증**:
+
+| 통증 | 구체적 결과 |
+|---|---|
+| **강결합** | `BillingService`/`NotificationService` 시그니처가 바뀌면 AuthService도 수정 |
+| **장애 전파** | NotificationService가 죽으면 회원가입 전체가 500. "메일 못 보냈으니 가입도 안 됩니다." |
+| **응답 지연** | 메일 발송이 끝날 때까지 사용자는 로딩 화면. 1초 → 3초 → 이탈 |
+| **확장 불가** | 다음에 마케팅도 회원가입을 감지하려면? `auth.register()`에 또 한 줄 추가. 회원가입 부수효과마다 auth 수정 |
+| **테스트 부담** | `AuthService` 단위 테스트에 NotificationService·AuditService mock 모두 필요 |
+
+**W3의 해법**: auth는 "회원가입 일어남"이라는 사실(이벤트)만 발행, 나머지는 알아서 구독.
+
+```java
+// auth — 사실 발행만
+public void register(SignupRequest req) {
+    User user = userRepository.save(...);
+    userEventPublisher.publishUserRegistered(new UserRegistered(user.getId(), user.getEmail(), Instant.now()));
+}
+
+// notification — 자기 일은 자기가
+@KafkaListener(topics = "synapse.platform.auth.user-registered.v1")
+public void on(UserRegistered e) { notificationService.sendWelcome(...); }
+
+// audit — 자기 일은 자기가
+@KafkaListener(topicPattern = "synapse\\..*")
+public void on(Object e) { auditService.record(...); }
+```
+
+5가지 통증 모두 해결: AuthService는 누가 듣는지 모름. 메일 서버 죽어도 가입 성공. 마케팅이 추가돼도 auth 코드 0줄 수정.
+
+> 💡 **왜 도메인 안에 `kafka/`를 두나?** "이 도메인이 어떤 이벤트를 발행/수신하는가"가 한눈에 보임. `kafka/` 글로벌 폴더에 모으면 결국 도메인이 흩어짐.
+
+---
+
+### 2️⃣ `global/config/KafkaConfig` — Producer/Consumer 팩토리
+
+**W2에서 무엇이 아픈가?**
+
+Producer/Consumer를 도메인마다 직접 만들면:
+
+```java
+// auth/kafka/UserEventPublisher.java (W2식으로 직접 구성)
+public class UserEventPublisher {
+    private final KafkaProducer<String, Object> producer;
+
+    public UserEventPublisher() {
+        Properties props = new Properties();
+        props.put(BOOTSTRAP_SERVERS_CONFIG, "...");      // 4개 도메인이
+        props.put(KEY_SERIALIZER_CLASS_CONFIG, ...);     // 같은 설정을
+        props.put(VALUE_SERIALIZER_CLASS_CONFIG, ...);   // 4번 복붙
+        props.put(ACKS_CONFIG, "all");
+        this.producer = new KafkaProducer<>(props);
+    }
+}
+```
+
+부트스트랩 서버 주소 한 번 바꾸려면 4곳 수정. ACK 정책, 직렬화 방식 변경도 마찬가지.
+
+**W3의 해법**: `KafkaConfig`가 `KafkaTemplate`/`ConsumerFactory` Bean을 등록 → 도메인은 주입만.
+
+```java
+// auth/kafka/producer/UserEventPublisher.java
+@Component
+public class UserEventPublisher {
+    private final KafkaTemplate<String, Object> kafkaTemplate;   // 주입받음
+    // 설정은 KafkaConfig가 한 곳에서 관리
+}
+```
+
+`@EnableKafka`도 여기에. 이게 없으면 `@KafkaListener`가 작동하지 않습니다.
+
+---
+
+### 3️⃣ `global/kafka/event/*` — 이벤트 클래스 임시 저장소
+
+**W2에서 무엇이 아픈가?**
+
+`UserRegistered` 이벤트를 auth가 정의하면:
+
+```java
+// auth/event/UserRegistered.java
+package com.synapse.platform.auth.event;
+public record UserRegistered(Long userId, String email, Instant at) {}
+```
+
+notification이 이걸 받으려면 **auth 패키지를 import**해야 함:
+
+```java
+// notification/kafka/consumer/UserRegisteredConsumer.java
+import com.synapse.platform.auth.event.UserRegistered;   // ❌ 도메인 격리 위반!
+```
+
+이러면 도메인 분리 의미가 사라집니다. notification이 auth 변경에 결합됨.
+
+**W3의 임시 해법**: 모든 이벤트 클래스를 `global/kafka/event/`에 모음.
+
+```java
+package com.synapse.platform.global.kafka.event;
+public record UserRegistered(Long userId, String email, Instant at) {}
+```
+
+auth와 notification 모두 `global/`만 의존 → 서로를 import하지 않음.
+
+**왜 "임시"인가?** 진짜 해법은 별도 라이브러리. `synapse-shared` 멀티모듈을 publish하면 `com.synapse.shared.event.UserRegistered`로 옮기고 `global/kafka/event/`는 삭제 예정. (build.gradle.kts에 주석으로 표시되어 있음)
+
+> 💡 별도 라이브러리가 정답인 이유: knowledge-svc/engagement-svc 등 **다른 마이크로서비스도 같은 이벤트 스키마**가 필요. 한 서비스 안에 묻어두면 공유 불가.
+
+---
+
+### 4️⃣ 토픽 네이밍 컨벤션 — `synapse.{service}.{domain}.{event}.v{N}`
+
+**W2에서 무엇이 아픈가?**
+
+여러 서비스가 같은 Kafka 클러스터를 쓰는데 네이밍 규칙이 없으면:
+
+```
+auth-events             ← 어느 서비스 거? 어느 도메인?
+user_registered          ← snake_case + kebab-case 혼용
+sendWelcomeEmail         ← 명령형이라 "사실"인지 헷갈림
+notification-v2          ← v1 어디 갔지?
+```
+
+운영 중 토픽 100개 넘어가면 누가 누구의 이벤트를 듣는지 추적 불가.
+
+**W3의 해법**: 엄격한 컨벤션.
+
+```
+synapse.{service}.{domain}.{event-name}.v{version}
+       ↓        ↓        ↓              ↓
+   prefix   서비스   도메인     사실(과거형)   스키마 버전
+```
+
+예시: `synapse.platform.auth.user-registered.v1`
+
+이름만 봐도 "platform 서비스의 auth 도메인에서 회원가입이 발생했다(v1 스키마)"가 읽힘. 그리고:
+
+- **버전(`v1`, `v2`)** — Avro 스키마가 호환 안 되게 변경되면 새 버전 신설. v1과 병행 운영 후 deprecate.
+- **과거형(`user-registered`)** — "일어났다"는 사실. 명령형(`send-email`)은 금지 — 명령은 수신자가 알아서 결정.
+
+---
+
+### 5️⃣ Consumer Group — 동일 메시지의 분배 vs 브로드캐스트
+
+**W2에서 무엇이 아픈가?**
+
+회원가입 이벤트 1개가 발생했는데:
+- audit는 한 번 기록 → 1번 처리
+- notification은 환영 메일 발송 → 1번 처리
+- (마케팅이 들어오면) 캠페인 매칭 → 1번 처리
+
+같은 이벤트지만 도메인마다 **각각** 처리해야 합니다. 동시에 한 도메인 안에 인스턴스가 3개라면 **한 도메인 안에서는 1번만** 처리되어야 합니다 (중복 메일 방지).
+
+이걸 직접 구현하면 락·중복 체크·DLQ까지 끝없는 코드.
+
+**W3의 해법**: Consumer Group이 자동 처리.
+
+```java
+// audit (인스턴스 3개) — 같은 groupId
+@KafkaListener(topics = "...", groupId = "synapse-platform-audit")
+
+// notification (인스턴스 5개) — 다른 groupId
+@KafkaListener(topics = "...", groupId = "synapse-platform-notification")
+```
+
+같은 `groupId`끼리는 메시지 분담 (한 메시지 1번만), 다른 `groupId`는 독립 (각각 받음). Kafka가 무료로 제공.
+
+---
+
+### 6️⃣ `spring-kafka` 의존성 + 테스트 도구
+
+W3 기능 구현용:
+
+| 의존성 | 어디서 쓰나 |
+|---|---|
+| `org.springframework.kafka:spring-kafka` | KafkaTemplate, @KafkaListener, @EnableKafka |
+| `org.springframework.kafka:spring-kafka-test` | EmbeddedKafka로 통합 테스트 (실 Kafka 없이) |
+
+**왜 라이브러리?** Apache Kafka의 raw Java 클라이언트는 너무 저수준. Spring 추상화가 ack 관리·재시도·역직렬화 trust package 등을 표준화해줍니다.
+
+---
+
+### 🔁 패턴 재확인: 통증 → 추가
+
+W2 → W3도 동일한 패턴:
+
+```
+W2의 상태:                              W3의 해법:
+도메인 간 호출이 "그냥 가능"        →   직접 호출 자체를 막고 이벤트로
+강결합·장애 전파·확장 부담            →   디커플링·격리·자유로운 구독자 추가
+```
+
+> 그리고 **W3→W4**도 같은 패턴: "service가 너무 많은 일(JPA 호출 + Kafka 발행 + 비즈니스 룰)을 짊어져 무겁다" → 라이트 헥사고날로 책임 분리. 자세한 건 W3 README의 마지막 섹션에서.
+
+---
+
 ## 📚 W2에서 새로 등장한 용어
 
 | 용어 | 의미 |
