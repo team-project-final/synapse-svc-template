@@ -27,7 +27,9 @@ public class NoteService {
     }
 
     public NoteResponse findById(Long id) {
-        return noteRepository.findById(id).map(this::toResponse).orElseThrow();
+        return noteRepository.findById(id).map(this::toResponse)
+            .orElseThrow(() -> new com.synapse.knowledge.global.exception.BusinessException(
+                com.synapse.knowledge.global.exception.ErrorCode.NOTE_NOT_FOUND));
     }
 
     private NoteResponse toResponse(Note n) {

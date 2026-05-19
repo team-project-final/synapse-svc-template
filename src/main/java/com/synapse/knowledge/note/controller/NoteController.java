@@ -1,8 +1,10 @@
 package com.synapse.knowledge.note.controller;
 
+import com.synapse.knowledge.global.response.ApiResponse;
 import com.synapse.knowledge.note.dto.request.CreateNoteRequest;
 import com.synapse.knowledge.note.dto.response.NoteResponse;
 import com.synapse.knowledge.note.service.NoteService;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -18,17 +20,17 @@ public class NoteController {
     }
 
     @PostMapping
-    public NoteResponse create(@RequestBody CreateNoteRequest request) {
-        return noteService.create(request);
+    public ApiResponse<NoteResponse> create(@Valid @RequestBody CreateNoteRequest request) {
+        return ApiResponse.ok(noteService.create(request));
     }
 
     @GetMapping
-    public List<NoteResponse> list() {
-        return noteService.findAll();
+    public ApiResponse<List<NoteResponse>> list() {
+        return ApiResponse.ok(noteService.findAll());
     }
 
     @GetMapping("/{id}")
-    public NoteResponse get(@PathVariable Long id) {
-        return noteService.findById(id);
+    public ApiResponse<NoteResponse> get(@PathVariable Long id) {
+        return ApiResponse.ok(noteService.findById(id));
     }
 }
